@@ -129,9 +129,15 @@ class ApplicationBrowser:
             observed_value: str | None = None
             if role == "combobox":
                 await locator.click()
-                await locator.fill(action.value)
-                await page.wait_for_timeout(150)
                 option = page.get_by_role("option", name=action.value, exact=True)
+                search_values = [action.value]
+                if "," in action.value:
+                    search_values.append(action.value.split(",", 1)[0])
+                for search_value in search_values:
+                    await locator.fill(search_value)
+                    await page.wait_for_timeout(750)
+                    if await option.count() == 1:
+                        break
                 if await option.count() != 1:
                     raise RuntimeError(
                         f"Combobox option is not uniquely selectable: {action.label}={action.value}"
@@ -224,6 +230,10 @@ class ApplicationBrowser:
         if field_type == "checkbox":
             desired = expected.casefold() in {"yes", "true", "1", "checked"}
             return (actual == "checked") is desired
+        if field_type == "tel":
+            expected_digits = "".join(character for character in expected if character.isdigit())
+            actual_digits = "".join(character for character in actual if character.isdigit())
+            return expected_digits == actual_digits
         if field_type == "file":
             actual_name = actual.replace("\\", "/").rsplit("/", 1)[-1]
             return Path(expected).expanduser().name.casefold() == actual_name.casefold()

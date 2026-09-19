@@ -22,6 +22,11 @@ def _profile_values(profile: ApplicantProfile) -> list[tuple[tuple[str, ...], st
         (("email", "email address"), person.email, "profile.person.email"),
         (("phone", "telephone", "mobile"), person.phone, "profile.person.phone"),
         (
+            ("location city", "current location"),
+            f"{person.city}, {person.region}, {person.country}",
+            "profile.person.location",
+        ),
+        (
             ("current city state and country", "city state and country"),
             f"{person.city}, {person.region}, {person.country}",
             "profile.person.location",
@@ -61,7 +66,7 @@ def build_fill_plan(
 
     for field in fields:
         label = _normalized(field.label)
-        match: tuple[str, str] | None = None
+        match = _approved_answer(field.label, profile)
         if field.field_type == "file":
             selector = _normalized(field.selector)
             if "resume" in selector and profile.documents.resume:
@@ -72,12 +77,11 @@ def build_fill_plan(
             if match is not None:
                 break
             if value and any(
-                phrase == label or (phrase != "name" and phrase in label) for phrase in phrases
+                phrase == label or (phrase not in {"name", "country"} and phrase in label)
+                for phrase in phrases
             ):
                 match = value, source
                 break
-        if match is None:
-            match = _approved_answer(field.label, profile)
 
         if match is None:
             unresolved.append(field)
@@ -85,9 +89,16 @@ def build_fill_plan(
 
         value, source = match
         if field.field_type in {"select", "combobox"}:
-            exact_option = next(
-                (option for option in field.options if option.casefold() == value.casefold()), None
-            )
+            if not field.options and source in {
+                "profile.person.country",
+                "profile.person.location",
+            }:
+                exact_option = value
+            else:
+                exact_option = next(
+                    (option for option in field.options if option.casefold() == value.casefold()),
+                    None,
+                )
             if exact_option is None:
                 prefix_matches = [
                     option

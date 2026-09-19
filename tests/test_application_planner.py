@@ -84,7 +84,7 @@ def test_planner_requires_exact_combobox_option() -> None:
         label="Location (City)",
         field_type="combobox",
         required=True,
-        options=["Toronto, Ontario, Canada", "Toronto, Ohio, United States"],
+        options=["Toronto, Ohio, United States", "Toronto, New South Wales, Australia"],
     )
     plan = build_fill_plan(1, [field], profile())
     assert plan.actions == []
@@ -114,6 +114,30 @@ def test_planner_uses_exact_custom_approved_answer() -> None:
     )
     plan = build_fill_plan(1, [field], applicant)
     assert plan.actions[0].value == "GitHub"
+
+
+def test_approved_work_authorization_beats_country_word_in_question() -> None:
+    field = FormField(
+        selector="#authorization",
+        label="Are you legally authorized to work in the country where this job is located?",
+        field_type="combobox",
+        required=True,
+        options=["Yes", "No"],
+    )
+    plan = build_fill_plan(1, [field], profile())
+    assert plan.actions[0].value == "Yes"
+
+
+def test_dynamic_location_combobox_uses_full_profile_location() -> None:
+    field = FormField(
+        selector="#location",
+        label="Location (City)",
+        field_type="combobox",
+        required=True,
+        options=[],
+    )
+    plan = build_fill_plan(1, [field], profile())
+    assert plan.actions[0].value == "Toronto, Ontario, Canada"
 
 
 def test_planner_maps_resume_by_selector() -> None:
