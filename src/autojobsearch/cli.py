@@ -5,6 +5,7 @@ import json
 import shutil
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -12,9 +13,10 @@ from rich.table import Table
 
 from .application import ReviewRequiredError, build_fill_plan, plan_digest, validate_approval
 from .application.browser import ApplicationBrowser
+from .application.browser_use_executor import submit_with_browser_use
 from .discovery import AshbyDiscovery, GreenhouseDiscovery, LeverDiscovery
 from .llm import OllamaClient, OllamaError
-from .models import BrowserExecutionResult, PlanApproval
+from .models import ApplicationPlan, BrowserExecutionResult, PlanApproval
 from .pipeline import Pipeline
 from .profile import load_profile
 from .settings import Settings
@@ -242,6 +244,53 @@ def submit_application_command(
     console.print(f"Submission result: {result.status.value}")
     if not result.submitted:
         console.print("No positive confirmation was observed; the application is not confirmed")
+
+
+@app.command("browser-use-submit")
+def browser_use_submit_command(
+    job_id: int,
+    url: str,
+    approval_digest: str = typer.Option(..., help="Digest from the reviewed current plan"),
+    confirm_submit: bool = typer.Option(
+        False, "--confirm-submit", help="Required explicit authorization to click submit"
+    ),
+    model: str = typer.Option("kimi-k2.6:cloud", help="Ollama or Ollama-cloud browser model"),
+    profile_dir: Annotated[
+        Path | None, typer.Option(help="Persistent Chrome profile for browser-use")
+    ] = None,
+) -> None:
+    """Submit one digest-locked plan through a browser-use agent."""
+    if not confirm_submit:
+        console.print("Submission blocked: pass --confirm-submit after reviewing the plan")
+        raise typer.Exit(1)
+    if profile_dir is None:
+        console.print("Submission blocked: pass --profile-dir for browser-use")
+        raise typer.Exit(1)
+    settings, _ = _runtime()
+    artifact_dir = settings.expanded_home / "applications" / str(job_id)
+    plan_path = artifact_dir / "plan.json"
+    if not plan_path.exists():
+        console.print("Submission blocked: prepare and review the application plan first")
+        raise typer.Exit(1)
+    plan = ApplicationPlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
+    approval = PlanApproval(job_id=job_id, plan_digest=approval_digest)
+    try:
+        status, result = asyncio.run(
+            submit_with_browser_use(
+                url=url,
+                plan=plan,
+                approval=approval,
+                model=model,
+                ollama_base_url=settings.ollama_base_url,
+                profile_dir=profile_dir.expanduser().resolve(),
+                artifact_dir=artifact_dir,
+            )
+        )
+    except ReviewRequiredError as exc:
+        console.print(f"Submission blocked: {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"Submission result: {status.value}")
+    console.print(result)
 
 
 @app.command("discover-lever")

@@ -190,17 +190,29 @@ class ApplicationBrowser:
 
         page = self._require_page()
         submit = page.locator(
-            'button[type="submit"], input[type="submit"], button:has-text("Submit application")'
+            'button[type="submit"]:visible, input[type="submit"]:visible, '
+            'button:has-text("Submit application"):visible'
         ).first
         if await submit.count() == 0:
             return BrowserExecutionResult(verified=verified, status=JobStatus.MANUAL_ACTION)
         await submit.click()
-        await page.wait_for_timeout(1_000)
-        text = (await page.locator("body").inner_text())[:5_000]
-        evidence = ApplicationEvidence(
-            confirmation_url=page.url,
-            confirmation_text=text,
-        )
+        evidence: ApplicationEvidence | None = None
+        for _ in range(30):
+            await page.wait_for_timeout(500)
+            text = (await page.locator("body").inner_text())[:5_000]
+            evidence = ApplicationEvidence(
+                confirmation_url=page.url,
+                confirmation_text=text,
+            )
+            if evidence.is_positive:
+                break
+
+        assert evidence is not None
+        artifact_dir = self.profile_dir.parent / "applications" / str(plan.job_id)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        screenshot_path = artifact_dir / "submission.png"
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+        evidence.screenshot_path = str(screenshot_path)
         status = JobStatus.SUBMISSION_CONFIRMED if evidence.is_positive else JobStatus.UNCERTAIN
         return BrowserExecutionResult(
             verified=verified,
