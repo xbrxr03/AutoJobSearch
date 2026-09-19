@@ -21,6 +21,7 @@ def test_upsert_deduplicates_and_records_transition(tmp_path) -> None:
     first = store.upsert_job(posting())
     second = store.upsert_job(posting())
     assert first == second
+    assert store.job_url(first) == "https://example.com/jobs/42?source=test"
 
     store.transition(first, JobStatus.SHORTLISTED, {"score": 88})
 

@@ -112,3 +112,10 @@ class Store:
                 "INSERT INTO events (job_id, event_type, payload_json) VALUES (?, ?, ?)",
                 (job_id, status.value, json.dumps(payload or {}, sort_keys=True)),
             )
+
+    def job_url(self, job_id: int) -> str:
+        with self.connect() as connection:
+            row = connection.execute("SELECT url FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown job id: {job_id}")
+            return str(row["url"])

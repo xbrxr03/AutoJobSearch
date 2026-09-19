@@ -6,6 +6,7 @@ import shutil
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit, urlunsplit
 
 import typer
 from rich.console import Console
@@ -31,6 +32,27 @@ def _runtime() -> tuple[Settings, Store]:
     store = Store(settings.database_path)
     store.initialize()
     return settings, store
+
+
+def _canonical_job_url(url: str) -> str:
+    parsed = urlsplit(url)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/apply"):
+        path = path.removesuffix("/apply")
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, "", ""))
+
+
+def _require_matching_job_url(store: Store, job_id: int, url: str) -> None:
+    try:
+        stored_url = store.job_url(job_id)
+    except KeyError as exc:
+        console.print(f"Application blocked: {exc}")
+        raise typer.Exit(1) from exc
+    if _canonical_job_url(stored_url) != _canonical_job_url(url):
+        console.print(
+            f"Application blocked: job {job_id} is stored as {stored_url}, not {url}"
+        )
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -176,7 +198,8 @@ def prepare_application_command(
     fill: bool = typer.Option(False, help="Dry-fill planned fields and verify them; never submit"),
 ) -> None:
     """Scan an application, create a private plan, and optionally verify a dry fill."""
-    settings, _ = _runtime()
+    settings, store = _runtime()
+    _require_matching_job_url(store, job_id, url)
     if not settings.profile_path.exists():
         console.print("Missing profile. Run: autojobsearch init")
         raise typer.Exit(1)
@@ -224,7 +247,8 @@ def submit_application_command(
     if not confirm_submit:
         console.print("Submission blocked: pass --confirm-submit after reviewing the plan")
         raise typer.Exit(1)
-    settings, _ = _runtime()
+    settings, store = _runtime()
+    _require_matching_job_url(store, job_id, url)
     if not settings.profile_path.exists():
         console.print("Missing profile. Run: autojobsearch init")
         raise typer.Exit(1)
@@ -267,6 +291,7 @@ def browser_use_submit_command(
         console.print("Submission blocked: pass --profile-dir for browser-use")
         raise typer.Exit(1)
     settings, store = _runtime()
+    _require_matching_job_url(store, job_id, url)
     artifact_dir = settings.expanded_home / "applications" / str(job_id)
     plan_path = artifact_dir / "plan.json"
     if not plan_path.exists():

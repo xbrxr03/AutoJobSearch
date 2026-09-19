@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from autojobsearch.cli import app
+from autojobsearch.cli import _canonical_job_url, app
 from autojobsearch.models import JobPosting
 
 runner = CliRunner()
@@ -69,3 +69,10 @@ def test_submit_command_requires_explicit_confirmation() -> None:
     )
     assert result.exit_code == 1
     assert "pass --confirm-submit" in result.stdout
+
+
+def test_canonical_job_url_matches_lever_apply_route() -> None:
+    posting = "https://jobs.lever.co/example/abc123"
+    application = "https://jobs.lever.co/example/abc123/apply?source=site"
+
+    assert _canonical_job_url(posting) == _canonical_job_url(application)
