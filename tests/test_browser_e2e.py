@@ -31,6 +31,12 @@ async def test_local_fixture_scan_fill_verify_and_submit(tmp_path) -> None:
     async with ApplicationBrowser(tmp_path / "chrome", headless=True) as browser:
         await browser.open(fixture.as_uri())
         fields = await browser.scan()
+        assert (
+            next(
+                field for field in fields if field.selector == 'textarea[name="custom-question"]'
+            ).label
+            == "Why this role?"
+        )
         plan = build_fill_plan(1, fields, profile)
         assert plan.ready_for_review
         verification = await browser.fill(plan)

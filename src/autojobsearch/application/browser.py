@@ -32,6 +32,13 @@ SCAN_SCRIPT = """
     }
     const parent = el.closest('label');
     if (parent) return parent.innerText.trim();
+    const applicationField = el.closest('.application-field');
+    if (applicationField?.parentElement) {
+      const applicationLabel = applicationField.parentElement.querySelector(
+        '.application-label .text, .application-label'
+      );
+      if (applicationLabel) return applicationLabel.innerText.trim();
+    }
     const labelledBy = el.getAttribute('aria-labelledby');
     if (labelledBy) {
       const ref = document.getElementById(labelledBy);
