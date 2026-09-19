@@ -119,6 +119,10 @@ class FitAssessment(BaseModel):
             raise ValueError("evidence fact ids are only allowed for matched requirements")
         if not self.matched_requirements and self.score >= 40:
             raise ValueError("an assessment with no matched requirements cannot score above 39")
+        matched = {item.strip().casefold() for item in self.matched_requirements}
+        missing = {item.strip().casefold() for item in self.missing_requirements}
+        if overlap := matched & missing:
+            raise ValueError(f"requirements cannot be both matched and missing: {sorted(overlap)}")
         return self
 
 

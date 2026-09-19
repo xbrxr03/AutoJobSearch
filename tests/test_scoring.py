@@ -61,6 +61,13 @@ def test_rejects_blocked_seniority() -> None:
     assert result.score == 0
 
 
+def test_seniority_word_in_description_does_not_block_entry_level_title() -> None:
+    result = hard_filter(
+        job(description="Collaborate with a product manager and senior stakeholders."), profile()
+    )
+    assert result.accepted
+
+
 def test_rejects_experience_above_limit() -> None:
     result = hard_filter(job(description="Minimum 7+ years of experience."), profile())
     assert not result.accepted

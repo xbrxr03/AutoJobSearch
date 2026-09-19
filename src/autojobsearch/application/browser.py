@@ -126,6 +126,7 @@ class ApplicationBrowser:
             field_type = (await locator.get_attribute("type") or "").casefold()
             role = (await locator.get_attribute("role") or "").casefold()
             control_type = "combobox" if role == "combobox" else field_type
+            observed_value: str | None = None
             if role == "combobox":
                 await locator.click()
                 await locator.fill(action.value)
@@ -149,10 +150,11 @@ class ApplicationBrowser:
                 if not file_path.is_file():
                     raise RuntimeError(f"Upload file does not exist: {file_path}")
                 await locator.set_input_files(str(file_path))
+                observed_value = file_path.name
             else:
                 await locator.fill(action.value)
 
-            actual = await self._value(locator, tag_name, control_type)
+            actual = observed_value or await self._value(locator, tag_name, control_type)
             results.append(
                 FillVerification(
                     selector=action.selector,

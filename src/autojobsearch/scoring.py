@@ -39,7 +39,6 @@ def extract_required_years(description: str) -> int | None:
 
 def hard_filter(job: JobPosting, profile: ApplicantProfile) -> HardFilterResult:
     prefs = profile.preferences
-    title_and_description = f"{job.title}\n{job.description}"
     reasons: list[str] = []
     score = 50
 
@@ -49,7 +48,7 @@ def hard_filter(job: JobPosting, profile: ApplicantProfile) -> HardFilterResult:
             accepted=False, score=0, reasons=[f"Blocked company: {company_blocks[0]}"]
         )
 
-    blocked = _contains_any(title_and_description, prefs.blocked_keywords)
+    blocked = _contains_any(job.title, prefs.blocked_keywords)
     if blocked:
         return HardFilterResult(accepted=False, score=0, reasons=[f"Blocked keyword: {blocked[0]}"])
 

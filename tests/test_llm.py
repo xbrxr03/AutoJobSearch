@@ -122,6 +122,18 @@ def test_assessment_rejects_unsupported_match() -> None:
         )
 
 
+def test_assessment_rejects_requirement_in_both_lists() -> None:
+    with pytest.raises(ValueError, match="both matched and missing"):
+        FitAssessment(
+            matched_requirements=["Python"],
+            missing_requirements=["python"],
+            evidence_fact_ids=["fact-1"],
+            score=50,
+            recommendation="borderline",
+            explanation="Contradictory classification.",
+        )
+
+
 @respx.mock
 def test_structured_retries_once_after_validation_error() -> None:
     invalid = {
