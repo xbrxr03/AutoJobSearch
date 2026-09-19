@@ -254,7 +254,7 @@ def browser_use_submit_command(
     confirm_submit: bool = typer.Option(
         False, "--confirm-submit", help="Required explicit authorization to click submit"
     ),
-    model: str = typer.Option("kimi-k2.6:cloud", help="Ollama or Ollama-cloud browser model"),
+    model: str = typer.Option("qwen3.5:9b", help="Local Ollama browser model"),
     profile_dir: Annotated[
         Path | None, typer.Option(help="Persistent Chrome profile for browser-use")
     ] = None,
@@ -266,7 +266,7 @@ def browser_use_submit_command(
     if profile_dir is None:
         console.print("Submission blocked: pass --profile-dir for browser-use")
         raise typer.Exit(1)
-    settings, _ = _runtime()
+    settings, store = _runtime()
     artifact_dir = settings.expanded_home / "applications" / str(job_id)
     plan_path = artifact_dir / "plan.json"
     if not plan_path.exists():
@@ -289,6 +289,15 @@ def browser_use_submit_command(
     except ReviewRequiredError as exc:
         console.print(f"Submission blocked: {exc}")
         raise typer.Exit(1) from exc
+    store.transition(
+        job_id,
+        status,
+        {
+            "executor": "browser-use",
+            "model": model,
+            "history": str(artifact_dir / "browser-use-history.json"),
+        },
+    )
     console.print(f"Submission result: {status.value}")
     console.print(result)
 
