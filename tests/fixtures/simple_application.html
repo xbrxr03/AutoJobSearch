@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Application fixture</title></head>
+  <body>
+    <form id="application">
+      <label for="first-name">First name</label>
+      <input id="first-name" name="first_name" required>
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+      <label for="sponsorship">Will you require visa sponsorship?</label>
+      <select id="sponsorship" name="sponsorship" required>
+        <option value="">Choose</option>
+        <option>Yes</option>
+        <option>No</option>
+      </select>
+      <button type="submit">Submit application</button>
+    </form>
+    <main id="confirmation" hidden></main>
+    <script>
+      document.querySelector('#application').addEventListener('submit', (event) => {
+        event.preventDefault();
+        event.target.hidden = true;
+        const confirmation = document.querySelector('#confirmation');
+        confirmation.hidden = false;
+        confirmation.textContent = 'Thank you for applying. We received your application.';
+        location.hash = 'submitted';
+      });
+    </script>
+  </body>
+</html>

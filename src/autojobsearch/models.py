@@ -112,3 +112,50 @@ class ApplicationEvidence(BaseModel):
             "application received",
         )
         return any(marker in text for marker in markers)
+
+
+class FormField(BaseModel):
+    selector: str
+    label: str
+    field_type: str
+    required: bool = False
+    options: list[str] = Field(default_factory=list)
+
+
+class FillAction(BaseModel):
+    selector: str
+    label: str
+    value: str
+    source: str
+    requires_review: bool = False
+
+
+class ApplicationPlan(BaseModel):
+    job_id: int
+    actions: list[FillAction] = Field(default_factory=list)
+    unresolved: list[FormField] = Field(default_factory=list)
+
+    @property
+    def ready_for_review(self) -> bool:
+        return not any(field.required for field in self.unresolved)
+
+
+class PlanApproval(BaseModel):
+    job_id: int
+    plan_digest: str
+    approved_by: str = "local-user"
+    approved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class FillVerification(BaseModel):
+    selector: str
+    expected: str
+    actual: str
+    matched: bool
+
+
+class BrowserExecutionResult(BaseModel):
+    verified: list[FillVerification] = Field(default_factory=list)
+    submitted: bool = False
+    evidence: ApplicationEvidence | None = None
+    status: JobStatus

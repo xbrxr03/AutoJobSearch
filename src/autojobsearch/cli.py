@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .discovery import GreenhouseDiscovery
+from .discovery import AshbyDiscovery, GreenhouseDiscovery, LeverDiscovery
 from .llm import OllamaClient, OllamaError
 from .pipeline import Pipeline
 from .profile import load_profile
@@ -89,6 +89,47 @@ def discover_greenhouse(
             }
         )
     console.print_json(json.dumps(results))
+
+
+def _score_discovered(jobs, use_llm: bool) -> None:
+    settings, store = _runtime()
+    if not settings.profile_path.exists():
+        console.print("Missing profile. Run: autojobsearch init")
+        raise typer.Exit(1)
+    profile = load_profile(settings.profile_path)
+    llm = OllamaClient(settings.ollama_base_url, settings.ollama_model) if use_llm else None
+    pipeline = Pipeline(store, profile, llm)
+    results = []
+    for job in jobs:
+        job_id, rules, assessment = pipeline.ingest_and_score(job)
+        results.append(
+            {
+                "id": job_id,
+                "title": job.title,
+                "company": job.company,
+                "rules": rules.model_dump(),
+                "assessment": assessment.model_dump() if assessment else None,
+            }
+        )
+    console.print_json(json.dumps(results))
+
+
+@app.command("discover-lever")
+def discover_lever(
+    site: str,
+    use_llm: bool = typer.Option(True, help="Use Ollama for accepted jobs"),
+) -> None:
+    """Discover and score all public jobs on a Lever site."""
+    _score_discovered(LeverDiscovery().discover(site), use_llm)
+
+
+@app.command("discover-ashby")
+def discover_ashby(
+    organization: str,
+    use_llm: bool = typer.Option(True, help="Use Ollama for accepted jobs"),
+) -> None:
+    """Discover and score all public jobs on an Ashby board."""
+    _score_discovered(AshbyDiscovery().discover(organization), use_llm)
 
 
 if __name__ == "__main__":

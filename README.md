@@ -24,7 +24,7 @@ being built before live form submission is enabled.
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra browser
 uv run autojobsearch init
 uv run autojobsearch doctor
 uv run pytest
@@ -53,4 +53,3 @@ artifacts. The `.gitignore` rejects these paths and only sanitized examples belo
 ## License
 
 MIT
-

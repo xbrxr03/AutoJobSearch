@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
+
+from ..models import (
+    ApplicationEvidence,
+    ApplicationPlan,
+    BrowserExecutionResult,
+    FillVerification,
+    FormField,
+    JobStatus,
+    PlanApproval,
+)
+from .review import validate_approval
+
+SCAN_SCRIPT = """
+() => {
+  const visible = (el) => {
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.display !== 'none'
+      && style.visibility !== 'hidden'
+      && rect.width > 0
+      && rect.height > 0;
+  };
+  const labelFor = (el) => {
+    if (el.id) {
+      const explicit = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (explicit) return explicit.innerText.trim();
+    }
+    const parent = el.closest('label');
+    if (parent) return parent.innerText.trim();
+    const labelledBy = el.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const ref = document.getElementById(labelledBy);
+      if (ref) return ref.innerText.trim();
+    }
+    return el.getAttribute('aria-label') || el.placeholder || el.name || el.id || '';
+  };
+  const selectorFor = (el, index) => {
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    if (el.name) return `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`;
+    return `${el.tagName.toLowerCase()}:nth-of-type(${index + 1})`;
+  };
+  return [...document.querySelectorAll('input, select, textarea')]
+    .filter((el) => visible(el) && !['hidden', 'submit', 'button', 'reset'].includes(el.type))
+    .map((el, index) => ({
+      selector: selectorFor(el, index),
+      label: labelFor(el),
+      field_type: el.tagName === 'SELECT' ? 'select' : (el.type || el.tagName.toLowerCase()),
+      required: Boolean(el.required || el.getAttribute('aria-required') === 'true'),
+      options: el.tagName === 'SELECT' ? [...el.options].map((option) => option.text.trim()) : [],
+    }));
+}
+"""
+
+
+class ApplicationBrowser:
+    def __init__(
+        self, profile_dir: Path, *, headless: bool = False, channel: str = "chrome"
+    ) -> None:
+        self.profile_dir = profile_dir
+        self.headless = headless
+        self.channel = channel
+        self._playwright: Playwright | None = None
+        self.context: BrowserContext | None = None
+        self.page: Page | None = None
+
+    async def __aenter__(self) -> ApplicationBrowser:
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        self._playwright = await async_playwright().start()
+        self.context = await self._playwright.chromium.launch_persistent_context(
+            user_data_dir=str(self.profile_dir),
+            channel=self.channel,
+            headless=self.headless,
+            viewport={"width": 1365, "height": 900},
+        )
+        self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        if self.context:
+            await self.context.close()
+        if self._playwright:
+            await self._playwright.stop()
+
+    def _require_page(self) -> Page:
+        if self.page is None:
+            raise RuntimeError("ApplicationBrowser must be used as an async context manager")
+        return self.page
+
+    async def open(self, url: str) -> None:
+        page = self._require_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+
+    async def scan(self) -> list[FormField]:
+        page = self._require_page()
+        raw_fields = await page.evaluate(SCAN_SCRIPT)
+        return [FormField.model_validate(field) for field in raw_fields]
+
+    async def fill(self, plan: ApplicationPlan) -> list[FillVerification]:
+        page = self._require_page()
+        results: list[FillVerification] = []
+        for action in plan.actions:
+            locator = page.locator(action.selector).first
+            tag_name = await locator.evaluate("element => element.tagName.toLowerCase()")
+            field_type = (await locator.get_attribute("type") or "").casefold()
+            if tag_name == "select":
+                await locator.select_option(label=action.value)
+            elif field_type == "checkbox":
+                desired = action.value.casefold() in {"yes", "true", "1", "checked"}
+                if await locator.is_checked() != desired:
+                    await locator.click()
+            elif field_type == "radio":
+                await locator.check()
+            elif field_type == "file":
+                raise RuntimeError("File uploads require a resolved local artifact path")
+            else:
+                await locator.fill(action.value)
+
+            actual = await self._value(locator, tag_name, field_type)
+            results.append(
+                FillVerification(
+                    selector=action.selector,
+                    expected=action.value,
+                    actual=actual,
+                    matched=self._matches(action.value, actual, field_type),
+                )
+            )
+        return results
+
+    async def submit(
+        self,
+        plan: ApplicationPlan,
+        approval: PlanApproval | None,
+        verified: list[FillVerification],
+    ) -> BrowserExecutionResult:
+        validate_approval(plan, approval)
+        if not verified or not all(item.matched for item in verified):
+            return BrowserExecutionResult(verified=verified, status=JobStatus.MANUAL_ACTION)
+
+        page = self._require_page()
+        submit = page.locator(
+            'button[type="submit"], input[type="submit"], button:has-text("Submit application")'
+        ).first
+        if await submit.count() == 0:
+            return BrowserExecutionResult(verified=verified, status=JobStatus.MANUAL_ACTION)
+        await submit.click()
+        await page.wait_for_timeout(1_000)
+        text = (await page.locator("body").inner_text())[:5_000]
+        evidence = ApplicationEvidence(
+            confirmation_url=page.url,
+            confirmation_text=text,
+        )
+        status = JobStatus.SUBMISSION_CONFIRMED if evidence.is_positive else JobStatus.UNCERTAIN
+        return BrowserExecutionResult(
+            verified=verified,
+            submitted=evidence.is_positive,
+            evidence=evidence,
+            status=status,
+        )
+
+    @staticmethod
+    async def _value(locator, tag_name: str, field_type: str) -> str:
+        if field_type in {"checkbox", "radio"}:
+            return "checked" if await locator.is_checked() else "unchecked"
+        if tag_name == "select":
+            return await locator.locator("option:checked").inner_text()
+        return await locator.input_value()
+
+    @staticmethod
+    def _matches(expected: str, actual: str, field_type: str) -> bool:
+        if field_type == "checkbox":
+            desired = expected.casefold() in {"yes", "true", "1", "checked"}
+            return (actual == "checked") is desired
+        return expected.strip().casefold() == actual.strip().casefold()
