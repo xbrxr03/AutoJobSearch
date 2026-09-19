@@ -1,0 +1,45 @@
+[project]
+name = "autojobsearch"
+version = "0.1.0"
+description = "Local-first job discovery, scoring, and review-gated application automation"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "AutoJobSearch contributors" }]
+dependencies = [
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.7,<3",
+  "typer>=0.15,<1",
+  "rich>=13.9,<15",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.50,<2"]
+discovery = ["python-jobspy>=1.1.82,<2"]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+  "pytest-cov>=6,<8",
+  "respx>=0.22,<1",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+autojobsearch = "autojobsearch.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+

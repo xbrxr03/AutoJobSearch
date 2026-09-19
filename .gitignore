@@ -1,0 +1,30 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage*
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# Personal data and local runtime state
+data/
+runtime/
+browser-profile/
+profiles/
+resumes/
+artifacts/
+screenshots/
+*.db
+*.sqlite*
+*.pdf
+*.doc
+*.docx
+
+# Keep sanitized examples only
+!config/profile.example.json
+!tests/fixtures/*.html
