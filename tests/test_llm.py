@@ -61,13 +61,13 @@ def test_list_models() -> None:
 def test_structured_assessment_and_fact_validation() -> None:
     assessment = FitAssessment(
         score=84,
-        recommendation="apply",
+        recommendation="strong_match",
         matched_requirements=["Python"],
         missing_requirements=[],
         evidence_fact_ids=["fact-1"],
         explanation="The supplied project demonstrates Python experience.",
     )
-    respx.post("http://127.0.0.1:11434/api/chat").mock(
+    route = respx.post("http://127.0.0.1:11434/api/chat").mock(
         return_value=httpx.Response(
             200, json={"message": {"content": assessment.model_dump_json()}}
         )
@@ -75,13 +75,16 @@ def test_structured_assessment_and_fact_validation() -> None:
     client = OllamaClient("http://127.0.0.1:11434", "qwen3.5:9b")
     result = client.assess_fit(sample_job(), sample_profile())
     assert result.score == 84
+    request = json.loads(route.calls.last.request.content)
+    assert request["think"] is False
+    assert request["options"]["num_predict"] == 1024
 
 
 @respx.mock
 def test_rejects_unknown_evidence_fact() -> None:
     payload = {
         "score": 95,
-        "recommendation": "apply",
+        "recommendation": "strong_match",
         "matched_requirements": ["Kubernetes"],
         "missing_requirements": [],
         "evidence_fact_ids": ["invented-fact"],
@@ -93,3 +96,55 @@ def test_rejects_unknown_evidence_fact() -> None:
     client = OllamaClient("http://127.0.0.1:11434", "qwen3.5:9b")
     with pytest.raises(OllamaError, match="unknown profile facts"):
         client.assess_fit(sample_job(), sample_profile())
+
+
+def test_assessment_rejects_score_recommendation_mismatch() -> None:
+    with pytest.raises(ValueError, match="requires recommendation"):
+        FitAssessment(
+            matched_requirements=["Python"],
+            missing_requirements=[],
+            evidence_fact_ids=["fact-1"],
+            score=90,
+            recommendation="skip",
+            explanation="Contradictory output.",
+        )
+
+
+def test_assessment_rejects_unsupported_match() -> None:
+    with pytest.raises(ValueError, match="require evidence"):
+        FitAssessment(
+            matched_requirements=["Python"],
+            missing_requirements=[],
+            evidence_fact_ids=[],
+            score=70,
+            recommendation="match",
+            explanation="Unsupported match.",
+        )
+
+
+@respx.mock
+def test_structured_retries_once_after_validation_error() -> None:
+    invalid = {
+        "matched_requirements": [],
+        "missing_requirements": ["Python"],
+        "evidence_fact_ids": ["fact-1"],
+        "score": 0,
+        "recommendation": "skip",
+        "explanation": "Evidence contradicts the empty match list.",
+    }
+    corrected = {
+        **invalid,
+        "evidence_fact_ids": [],
+        "explanation": "Python is unsupported, so no evidence is cited.",
+    }
+    route = respx.post("http://127.0.0.1:11434/api/chat").mock(
+        side_effect=[
+            httpx.Response(200, json={"message": {"content": json.dumps(invalid)}}),
+            httpx.Response(200, json={"message": {"content": json.dumps(corrected)}}),
+        ]
+    )
+    result = OllamaClient("http://127.0.0.1:11434", "qwen3.5:9b").structured(
+        system="test", prompt="test", schema=FitAssessment
+    )
+    assert result.evidence_fact_ids == []
+    assert route.call_count == 2

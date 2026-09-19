@@ -45,11 +45,15 @@ SCAN_SCRIPT = """
     return `${el.tagName.toLowerCase()}:nth-of-type(${index + 1})`;
   };
   return [...document.querySelectorAll('input, select, textarea')]
-    .filter((el) => visible(el) && !['hidden', 'submit', 'button', 'reset'].includes(el.type))
+    .filter((el) => visible(el)
+      && el.getAttribute('aria-hidden') !== 'true'
+      && !['hidden', 'submit', 'button', 'reset'].includes(el.type))
     .map((el, index) => ({
       selector: selectorFor(el, index),
       label: labelFor(el),
-      field_type: el.tagName === 'SELECT' ? 'select' : (el.type || el.tagName.toLowerCase()),
+      field_type: el.getAttribute('role') === 'combobox'
+        ? 'combobox'
+        : (el.tagName === 'SELECT' ? 'select' : (el.type || el.tagName.toLowerCase())),
       required: Boolean(el.required || el.getAttribute('aria-required') === 'true'),
       options: el.tagName === 'SELECT' ? [...el.options].map((option) => option.text.trim()) : [],
     }));
@@ -98,7 +102,20 @@ class ApplicationBrowser:
     async def scan(self) -> list[FormField]:
         page = self._require_page()
         raw_fields = await page.evaluate(SCAN_SCRIPT)
-        return [FormField.model_validate(field) for field in raw_fields]
+        fields = [FormField.model_validate(field) for field in raw_fields]
+        for field in fields:
+            if field.field_type != "combobox" or not field.required:
+                continue
+            locator = page.locator(field.selector).first
+            await locator.click()
+            await page.wait_for_timeout(150)
+            field.options = [
+                text.strip()
+                for text in await page.get_by_role("option").all_inner_texts()
+                if text.strip()
+            ]
+            await locator.press("Escape")
+        return fields
 
     async def fill(self, plan: ApplicationPlan) -> list[FillVerification]:
         page = self._require_page()
@@ -107,7 +124,19 @@ class ApplicationBrowser:
             locator = page.locator(action.selector).first
             tag_name = await locator.evaluate("element => element.tagName.toLowerCase()")
             field_type = (await locator.get_attribute("type") or "").casefold()
-            if tag_name == "select":
+            role = (await locator.get_attribute("role") or "").casefold()
+            control_type = "combobox" if role == "combobox" else field_type
+            if role == "combobox":
+                await locator.click()
+                await locator.fill(action.value)
+                await page.wait_for_timeout(150)
+                option = page.get_by_role("option", name=action.value, exact=True)
+                if await option.count() != 1:
+                    raise RuntimeError(
+                        f"Combobox option is not uniquely selectable: {action.label}={action.value}"
+                    )
+                await option.click()
+            elif tag_name == "select":
                 await locator.select_option(label=action.value)
             elif field_type == "checkbox":
                 desired = action.value.casefold() in {"yes", "true", "1", "checked"}
@@ -120,13 +149,13 @@ class ApplicationBrowser:
             else:
                 await locator.fill(action.value)
 
-            actual = await self._value(locator, tag_name, field_type)
+            actual = await self._value(locator, tag_name, control_type)
             results.append(
                 FillVerification(
                     selector=action.selector,
                     expected=action.value,
                     actual=actual,
-                    matched=self._matches(action.value, actual, field_type),
+                    matched=self._matches(action.value, actual, control_type),
                 )
             )
         return results
@@ -166,6 +195,21 @@ class ApplicationBrowser:
     async def _value(locator, tag_name: str, field_type: str) -> str:
         if field_type in {"checkbox", "radio"}:
             return "checked" if await locator.is_checked() else "unchecked"
+        if field_type == "combobox":
+            await locator.click()
+            selected_option = locator.page.locator(
+                '[role="option"][class*="--is-selected"]:visible'
+            )
+            if await selected_option.count() == 1:
+                value = (await selected_option.inner_text()).strip()
+                await locator.press("Escape")
+                return value
+            await locator.press("Escape")
+            shell = locator.locator("xpath=ancestor::*[contains(@class, 'select-shell')][1]")
+            selected = shell.locator("[class*='single-value']")
+            if await selected.count():
+                return (await selected.first.inner_text()).strip()
+            return await locator.input_value()
         if tag_name == "select":
             return await locator.locator("option:checked").inner_text()
         return await locator.input_value()

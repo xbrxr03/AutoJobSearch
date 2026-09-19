@@ -30,23 +30,52 @@ class OllamaClient:
         return [item["name"] for item in response.json().get("models", [])]
 
     def structured(self, *, system: str, prompt: str, schema: type[SchemaT]) -> SchemaT:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
         payload = {
             "model": self.model,
             "stream": False,
+            "think": False,
+            "keep_alive": "10m",
             "format": schema.model_json_schema(),
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            "options": {"temperature": 0, "num_ctx": 16384},
+            "messages": messages,
+            "options": {"temperature": 0, "num_ctx": 16384, "num_predict": 1024},
         }
-        try:
-            response = httpx.post(f"{self.base_url}/api/chat", json=payload, timeout=self.timeout)
-            response.raise_for_status()
-            content = response.json()["message"]["content"]
-            return schema.model_validate_json(content)
-        except (httpx.HTTPError, KeyError, ValueError) as exc:
-            raise OllamaError(f"Invalid Ollama response for {schema.__name__}: {exc}") from exc
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/api/chat", json=payload, timeout=self.timeout
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise OllamaError(f"Ollama request failed for {schema.__name__}: {exc}") from exc
+
+            try:
+                content = response.json()["message"]["content"]
+                return schema.model_validate_json(content)
+            except (KeyError, ValueError) as exc:
+                last_error = exc
+                if attempt == 0:
+                    messages.extend(
+                        [
+                            {
+                                "role": "assistant",
+                                "content": content if "content" in locals() else "",
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"That response failed schema validation: {exc}. "
+                                    "Correct every reported issue and return only valid JSON."
+                                ),
+                            },
+                        ]
+                    )
+
+        raise OllamaError(f"Invalid Ollama response for {schema.__name__}: {last_error}")
 
     def assess_fit(self, job: JobPosting, profile: ApplicantProfile) -> FitAssessment:
         facts = [fact.model_dump() for fact in profile.facts]
@@ -63,7 +92,16 @@ class OllamaClient:
                     "Use only the supplied applicant facts as evidence.",
                     "Never invent skills, credentials, dates, or experience.",
                     "Every evidence_fact_id must exactly match a supplied fact id.",
-                    "Return a conservative 0-100 fit score.",
+                    "Identify each concrete job requirement and put it in exactly one of "
+                    "matched_requirements or missing_requirements.",
+                    "A requirement is matched only when a supplied fact directly supports it; "
+                    "otherwise it is missing.",
+                    "Fill matched_requirements, missing_requirements, and evidence_fact_ids "
+                    "before choosing the score. Keep all fields semantically consistent.",
+                    "Use this exact score rubric: 0-39 skip, 40-59 borderline, 60-79 match, "
+                    "80-95 strong_match. Never return a score above 95.",
+                    "If no applicant facts are supplied, score 0, recommend skip, cite no "
+                    "evidence, and list all concrete requirements as missing.",
                 ],
             },
             ensure_ascii=False,

@@ -53,3 +53,51 @@ def test_planner_blocks_readiness_on_unknown_required_field() -> None:
     plan = build_fill_plan(1, fields, profile())
     assert not plan.ready_for_review
     assert plan.unresolved == fields
+
+
+def test_planner_does_not_guess_legal_name_question() -> None:
+    field = FormField(
+        selector="#legal-name",
+        label="Legal Name (if different than above)",
+        field_type="text",
+        required=True,
+    )
+    plan = build_fill_plan(1, [field], profile())
+    assert plan.actions == []
+    assert plan.unresolved == [field]
+
+
+def test_planner_formats_compound_location_question() -> None:
+    field = FormField(
+        selector="#current-location",
+        label="Please indicate your current city, state, and country.",
+        field_type="text",
+        required=True,
+    )
+    plan = build_fill_plan(1, [field], profile())
+    assert plan.actions[0].value == "Toronto, Ontario, Canada"
+
+
+def test_planner_requires_exact_combobox_option() -> None:
+    field = FormField(
+        selector="#location",
+        label="Location (City)",
+        field_type="combobox",
+        required=True,
+        options=["Toronto, Ontario, Canada", "Toronto, Ohio, United States"],
+    )
+    plan = build_fill_plan(1, [field], profile())
+    assert plan.actions == []
+    assert plan.unresolved == [field]
+
+
+def test_planner_accepts_unique_country_option_with_dial_code() -> None:
+    field = FormField(
+        selector="#country",
+        label="Country",
+        field_type="combobox",
+        required=True,
+        options=["United States +1", "Canada +1", "United Kingdom +44"],
+    )
+    plan = build_fill_plan(1, [field], profile())
+    assert plan.actions[0].value == "Canada +1"

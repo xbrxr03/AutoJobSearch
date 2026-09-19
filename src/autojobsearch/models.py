@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 
 class JobStatus(StrEnum):
@@ -87,12 +87,33 @@ class HardFilterResult(BaseModel):
 
 
 class FitAssessment(BaseModel):
-    score: int = Field(ge=0, le=100)
-    recommendation: str
-    matched_requirements: list[str] = Field(default_factory=list)
-    missing_requirements: list[str] = Field(default_factory=list)
-    evidence_fact_ids: list[str] = Field(default_factory=list)
+    matched_requirements: list[str]
+    missing_requirements: list[str]
+    evidence_fact_ids: list[str]
+    score: int = Field(ge=0, le=95)
+    recommendation: Literal["strong_match", "match", "borderline", "skip"]
     explanation: str
+
+    @model_validator(mode="after")
+    def assessment_is_consistent(self) -> FitAssessment:
+        expected = (
+            "strong_match"
+            if self.score >= 80
+            else "match"
+            if self.score >= 60
+            else "borderline"
+            if self.score >= 40
+            else "skip"
+        )
+        if self.recommendation != expected:
+            raise ValueError(f"score {self.score} requires recommendation {expected}")
+        if self.matched_requirements and not self.evidence_fact_ids:
+            raise ValueError("matched requirements require evidence fact ids")
+        if not self.matched_requirements and self.evidence_fact_ids:
+            raise ValueError("evidence fact ids are only allowed for matched requirements")
+        if not self.matched_requirements and self.score >= 40:
+            raise ValueError("an assessment with no matched requirements cannot score above 39")
+        return self
 
 
 class ApplicationEvidence(BaseModel):

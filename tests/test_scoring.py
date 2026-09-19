@@ -40,8 +40,13 @@ def job(**overrides) -> JobPosting:
     return JobPosting.model_validate(data)
 
 
-def test_extract_required_years_uses_smallest_requirement() -> None:
-    assert extract_required_years("2 years Python and 5 years industry experience") == 2
+def test_extract_required_years_uses_highest_explicit_requirement() -> None:
+    assert extract_required_years("2 years Python and 5 years industry experience") == 5
+
+
+def test_extract_required_years_ignores_unrelated_company_age() -> None:
+    description = "Operating for 20 years. This role requires 3 years of Python experience."
+    assert extract_required_years(description) == 3
 
 
 def test_accepts_matching_entry_level_job() -> None:

@@ -7,8 +7,10 @@ class FakeLLM:
     def assess_fit(self, job: JobPosting, profile: ApplicantProfile) -> FitAssessment:
         return FitAssessment(
             score=82,
-            recommendation="apply",
-            evidence_fact_ids=[],
+            recommendation="strong_match",
+            matched_requirements=["Software engineering"],
+            missing_requirements=[],
+            evidence_fact_ids=["fact-1"],
             explanation="Strong title and location match.",
         )
 

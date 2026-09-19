@@ -4,7 +4,11 @@ import re
 
 from .models import ApplicantProfile, HardFilterResult, JobPosting
 
-YEARS_PATTERN = re.compile(r"(?:minimum(?: of)?\s+)?(\d{1,2})\+?\s+years?", re.IGNORECASE)
+YEARS_PATTERN = re.compile(r"(\d{1,2})\+?\s+years?", re.IGNORECASE)
+EXPERIENCE_SIGNAL = re.compile(
+    r"\b(?:experience|experienced|minimum|required|requires?|qualifications?|at least|must have)\b",
+    re.IGNORECASE,
+)
 
 
 def _contains_any(text: str, values: list[str]) -> list[str]:
@@ -13,8 +17,24 @@ def _contains_any(text: str, values: list[str]) -> list[str]:
 
 
 def extract_required_years(description: str) -> int | None:
-    matches = [int(match) for match in YEARS_PATTERN.findall(description)]
-    return min(matches) if matches else None
+    requirements: list[int] = []
+    for match in YEARS_PATTERN.finditer(description):
+        context_start = max(
+            description.rfind(".", 0, match.start()),
+            description.rfind("!", 0, match.start()),
+            description.rfind("?", 0, match.start()),
+            description.rfind("\n", 0, match.start()),
+        )
+        endings = [
+            position
+            for delimiter in ".!?\n"
+            if (position := description.find(delimiter, match.end())) != -1
+        ]
+        context_end = min(endings) if endings else len(description)
+        context = description[context_start + 1 : context_end]
+        if EXPERIENCE_SIGNAL.search(context):
+            requirements.append(int(match.group(1)))
+    return max(requirements) if requirements else None
 
 
 def hard_filter(job: JobPosting, profile: ApplicantProfile) -> HardFilterResult:

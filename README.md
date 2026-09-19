@@ -43,7 +43,23 @@ Discover and score a public Greenhouse board:
 uv run autojobsearch discover-greenhouse <board-token>
 ```
 
-Use `--no-use-llm` to exercise discovery and deterministic filters without Ollama.
+Discovery runs deterministic filters without Ollama by default. Add `--use-llm` to assess only
+the jobs that pass those filters. The command prints a compact summary; add `--json` when full
+machine-readable results are needed.
+
+Routine fit scoring disables Qwen's extended reasoning mode and caps structured output so local
+batch triage remains practical. Deterministic rules still run first, avoiding model calls for
+jobs that clearly miss the configured title, location, seniority, or experience limits.
+
+Prepare and optionally dry-fill an application without submitting it:
+
+```bash
+uv run autojobsearch prepare-application <job-id> <application-url> --fill
+```
+
+The command saves the exact plan and verification report under
+`~/.autojobsearch/applications/<job-id>/`. Required questions that cannot be answered from an
+explicit profile value remain unresolved and block approval. This command never clicks submit.
 
 ## Repository safety
 

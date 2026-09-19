@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from .application import build_fill_plan, plan_digest
+from .application.browser import ApplicationBrowser
 from .discovery import AshbyDiscovery, GreenhouseDiscovery, LeverDiscovery
 from .llm import OllamaClient, OllamaError
 from .pipeline import Pipeline
@@ -66,9 +70,14 @@ def doctor() -> None:
 @app.command("discover-greenhouse")
 def discover_greenhouse(
     board_token: str,
-    use_llm: bool = typer.Option(True, help="Use Ollama for accepted jobs"),
+    use_llm: bool = typer.Option(False, help="Use Ollama for accepted jobs"),
+    json_output: bool = typer.Option(False, "--json", help="Print every result as JSON"),
 ) -> None:
     """Discover and score all public jobs on a Greenhouse board."""
+    _score_discovered(GreenhouseDiscovery().discover(board_token), use_llm, json_output)
+
+
+def _score_discovered(jobs: Iterable, use_llm: bool, json_output: bool = False) -> None:
     settings, store = _runtime()
     if not settings.profile_path.exists():
         console.print("Missing profile. Run: autojobsearch init")
@@ -77,31 +86,15 @@ def discover_greenhouse(
     llm = OllamaClient(settings.ollama_base_url, settings.ollama_model) if use_llm else None
     pipeline = Pipeline(store, profile, llm)
     results = []
-    for job in GreenhouseDiscovery().discover(board_token):
-        job_id, rules, assessment = pipeline.ingest_and_score(job)
-        results.append(
-            {
-                "id": job_id,
-                "title": job.title,
-                "company": job.company,
-                "rules": rules.model_dump(),
-                "assessment": assessment.model_dump() if assessment else None,
-            }
-        )
-    console.print_json(json.dumps(results))
-
-
-def _score_discovered(jobs, use_llm: bool) -> None:
-    settings, store = _runtime()
-    if not settings.profile_path.exists():
-        console.print("Missing profile. Run: autojobsearch init")
-        raise typer.Exit(1)
-    profile = load_profile(settings.profile_path)
-    llm = OllamaClient(settings.ollama_base_url, settings.ollama_model) if use_llm else None
-    pipeline = Pipeline(store, profile, llm)
-    results = []
+    accepted = 0
+    shortlisted = []
     for job in jobs:
         job_id, rules, assessment = pipeline.ingest_and_score(job)
+        if rules.accepted:
+            accepted += 1
+        effective_score = assessment.score if assessment else rules.score
+        if rules.accepted and effective_score >= profile.preferences.minimum_score:
+            shortlisted.append((effective_score, job.title, job.company))
         results.append(
             {
                 "id": job_id,
@@ -111,25 +104,98 @@ def _score_discovered(jobs, use_llm: bool) -> None:
                 "assessment": assessment.model_dump() if assessment else None,
             }
         )
-    console.print_json(json.dumps(results))
+    if json_output:
+        console.print_json(json.dumps(results))
+        return
+
+    summary = Table("Metric", "Count")
+    summary.add_row("Discovered", str(len(results)))
+    summary.add_row("Passed hard filters", str(accepted))
+    summary.add_row("Shortlisted", str(len(shortlisted)))
+    summary.add_row("Rejected", str(len(results) - len(shortlisted)))
+    console.print(summary)
+
+    if shortlisted:
+        top = Table("Score", "Title", "Company", title="Top shortlisted roles")
+        for score, title, company in sorted(shortlisted, reverse=True)[:20]:
+            top.add_row(str(score), title, company)
+        console.print(top)
+
+
+async def _prepare_application(
+    *, settings: Settings, job_id: int, url: str, headless: bool, fill: bool
+) -> None:
+    profile = load_profile(settings.profile_path)
+    async with ApplicationBrowser(
+        settings.expanded_home / "browser-profile", headless=headless
+    ) as browser:
+        await browser.open(url)
+        fields = await browser.scan()
+        plan = build_fill_plan(job_id, fields, profile)
+        verified = await browser.fill(plan) if fill else []
+
+    artifact_dir = settings.expanded_home / "applications" / str(job_id)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "plan.json").write_text(plan.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    (artifact_dir / "verification.json").write_text(
+        json.dumps([item.model_dump() for item in verified], indent=2) + "\n", encoding="utf-8"
+    )
+
+    summary = Table("Application preparation", "Result")
+    summary.add_row("Scanned fields", str(len(fields)))
+    summary.add_row("Planned actions", str(len(plan.actions)))
+    summary.add_row("Verified actions", str(sum(item.matched for item in verified)))
+    summary.add_row("Unresolved required", str(sum(field.required for field in plan.unresolved)))
+    summary.add_row("Ready for review", str(plan.ready_for_review))
+    summary.add_row("Plan digest", plan_digest(plan))
+    summary.add_row("Private artifacts", str(artifact_dir))
+    console.print(summary)
+
+    required = [field for field in plan.unresolved if field.required]
+    if required:
+        unresolved = Table("Type", "Required field", title="Manual answers needed")
+        for field in required:
+            unresolved.add_row(field.field_type, field.label or field.selector)
+        console.print(unresolved)
+
+
+@app.command("prepare-application")
+def prepare_application_command(
+    job_id: int,
+    url: str,
+    headless: bool = typer.Option(False, help="Run Chrome without showing a window"),
+    fill: bool = typer.Option(False, help="Dry-fill planned fields and verify them; never submit"),
+) -> None:
+    """Scan an application, create a private plan, and optionally verify a dry fill."""
+    settings, _ = _runtime()
+    if not settings.profile_path.exists():
+        console.print("Missing profile. Run: autojobsearch init")
+        raise typer.Exit(1)
+    asyncio.run(
+        _prepare_application(
+            settings=settings, job_id=job_id, url=url, headless=headless, fill=fill
+        )
+    )
 
 
 @app.command("discover-lever")
 def discover_lever(
     site: str,
-    use_llm: bool = typer.Option(True, help="Use Ollama for accepted jobs"),
+    use_llm: bool = typer.Option(False, help="Use Ollama for accepted jobs"),
+    json_output: bool = typer.Option(False, "--json", help="Print every result as JSON"),
 ) -> None:
     """Discover and score all public jobs on a Lever site."""
-    _score_discovered(LeverDiscovery().discover(site), use_llm)
+    _score_discovered(LeverDiscovery().discover(site), use_llm, json_output)
 
 
 @app.command("discover-ashby")
 def discover_ashby(
     organization: str,
-    use_llm: bool = typer.Option(True, help="Use Ollama for accepted jobs"),
+    use_llm: bool = typer.Option(False, help="Use Ollama for accepted jobs"),
+    json_output: bool = typer.Option(False, "--json", help="Print every result as JSON"),
 ) -> None:
     """Discover and score all public jobs on an Ashby board."""
-    _score_discovered(AshbyDiscovery().discover(organization), use_llm)
+    _score_discovered(AshbyDiscovery().discover(organization), use_llm, json_output)
 
 
 if __name__ == "__main__":

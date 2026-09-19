@@ -21,6 +21,11 @@ def _profile_values(profile: ApplicantProfile) -> list[tuple[tuple[str, ...], st
         ),
         (("email", "email address"), person.email, "profile.person.email"),
         (("phone", "telephone", "mobile"), person.phone, "profile.person.phone"),
+        (
+            ("current city state and country", "city state and country"),
+            f"{person.city}, {person.region}, {person.country}",
+            "profile.person.location",
+        ),
         (("city",), person.city, "profile.person.city"),
         (("state", "province", "region"), person.region, "profile.person.region"),
         (("country",), person.country, "profile.person.country"),
@@ -55,7 +60,9 @@ def build_fill_plan(
         label = _normalized(field.label)
         match: tuple[str, str] | None = None
         for phrases, value, source in values:
-            if value and any(phrase == label or phrase in label for phrase in phrases):
+            if value and any(
+                phrase == label or (phrase != "name" and phrase in label) for phrase in phrases
+            ):
                 match = value, source
                 break
         if match is None:
@@ -66,13 +73,28 @@ def build_fill_plan(
             continue
 
         value, source = match
+        if field.field_type in {"select", "combobox"}:
+            exact_option = next(
+                (option for option in field.options if option.casefold() == value.casefold()), None
+            )
+            if exact_option is None:
+                prefix_matches = [
+                    option
+                    for option in field.options
+                    if option.casefold().startswith(f"{value.casefold()} ")
+                ]
+                exact_option = prefix_matches[0] if len(prefix_matches) == 1 else None
+            if exact_option is None:
+                unresolved.append(field)
+                continue
+            value = exact_option
         actions.append(
             FillAction(
                 selector=field.selector,
                 label=field.label,
                 value=value,
                 source=source,
-                requires_review=field.field_type in {"radio", "select", "checkbox"},
+                requires_review=field.field_type in {"radio", "select", "combobox", "checkbox"},
             )
         )
 
