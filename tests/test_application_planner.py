@@ -101,3 +101,25 @@ def test_planner_accepts_unique_country_option_with_dial_code() -> None:
     )
     plan = build_fill_plan(1, [field], profile())
     assert plan.actions[0].value == "Canada +1"
+
+
+def test_planner_uses_exact_custom_approved_answer() -> None:
+    applicant = profile().model_copy(deep=True)
+    applicant.approved_answers["how_did_you_hear_about_this_job"] = "GitHub"
+    field = FormField(
+        selector="#source",
+        label="How did you hear about this job?",
+        field_type="text",
+        required=True,
+    )
+    plan = build_fill_plan(1, [field], applicant)
+    assert plan.actions[0].value == "GitHub"
+
+
+def test_planner_maps_resume_by_selector() -> None:
+    applicant = profile().model_copy(deep=True)
+    applicant.documents.resume = "/private/resume.pdf"
+    field = FormField(selector="#resume", label="Attach", field_type="file")
+    plan = build_fill_plan(1, [field], applicant)
+    assert plan.actions[0].value == "/private/resume.pdf"
+    assert plan.actions[0].requires_review

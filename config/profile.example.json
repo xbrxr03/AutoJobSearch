@@ -28,9 +28,12 @@
       "tags": ["python", "postgresql"]
     }
   ],
+  "documents": {
+    "resume": "",
+    "cover_letter": ""
+  },
   "approved_answers": {
     "authorized_to_work": "Yes",
     "requires_sponsorship": "No"
   }
 }
-

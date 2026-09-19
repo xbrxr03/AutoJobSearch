@@ -25,6 +25,8 @@ def approve_plan(plan: ApplicationPlan, approved_by: str = "local-user") -> Plan
 
 
 def validate_approval(plan: ApplicationPlan, approval: PlanApproval | None) -> None:
+    if not plan.ready_for_review:
+        raise ReviewRequiredError("Submission is blocked by unresolved required fields")
     if approval is None:
         raise ReviewRequiredError("Submission requires an explicit plan approval")
     if approval.job_id != plan.job_id or approval.plan_digest != plan_digest(plan):

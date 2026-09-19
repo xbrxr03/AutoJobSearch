@@ -46,6 +46,9 @@ def _approved_answer(label: str, profile: ApplicantProfile) -> tuple[str, str] |
             phrase in normalized_label for phrase in phrases
         ):
             return profile.approved_answers[key], f"profile.approved_answers.{key}"
+    for key, value in profile.approved_answers.items():
+        if _normalized(key) == normalized_label:
+            return value, f"profile.approved_answers.{key}"
     return None
 
 
@@ -59,7 +62,15 @@ def build_fill_plan(
     for field in fields:
         label = _normalized(field.label)
         match: tuple[str, str] | None = None
+        if field.field_type == "file":
+            selector = _normalized(field.selector)
+            if "resume" in selector and profile.documents.resume:
+                match = profile.documents.resume, "profile.documents.resume"
+            elif "cover letter" in selector and profile.documents.cover_letter:
+                match = profile.documents.cover_letter, "profile.documents.cover_letter"
         for phrases, value, source in values:
+            if match is not None:
+                break
             if value and any(
                 phrase == label or (phrase != "name" and phrase in label) for phrase in phrases
             ):
@@ -94,7 +105,8 @@ def build_fill_plan(
                 label=field.label,
                 value=value,
                 source=source,
-                requires_review=field.field_type in {"radio", "select", "combobox", "checkbox"},
+                requires_review=field.field_type
+                in {"radio", "select", "combobox", "checkbox", "file"},
             )
         )
 

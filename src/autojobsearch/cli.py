@@ -10,10 +10,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .application import build_fill_plan, plan_digest
+from .application import ReviewRequiredError, build_fill_plan, plan_digest, validate_approval
 from .application.browser import ApplicationBrowser
 from .discovery import AshbyDiscovery, GreenhouseDiscovery, LeverDiscovery
 from .llm import OllamaClient, OllamaError
+from .models import BrowserExecutionResult, PlanApproval
 from .pipeline import Pipeline
 from .profile import load_profile
 from .settings import Settings
@@ -140,6 +141,11 @@ async def _prepare_application(
     (artifact_dir / "verification.json").write_text(
         json.dumps([item.model_dump() for item in verified], indent=2) + "\n", encoding="utf-8"
     )
+    digest_path = artifact_dir / "approval-digest.txt"
+    if plan.ready_for_review:
+        digest_path.write_text(plan_digest(plan) + "\n", encoding="utf-8")
+    else:
+        digest_path.unlink(missing_ok=True)
 
     summary = Table("Application preparation", "Result")
     summary.add_row("Scanned fields", str(len(fields)))
@@ -147,7 +153,8 @@ async def _prepare_application(
     summary.add_row("Verified actions", str(sum(item.matched for item in verified)))
     summary.add_row("Unresolved required", str(sum(field.required for field in plan.unresolved)))
     summary.add_row("Ready for review", str(plan.ready_for_review))
-    summary.add_row("Plan digest", plan_digest(plan))
+    digest = plan_digest(plan) if plan.ready_for_review else "blocked until required fields resolve"
+    summary.add_row("Plan digest", digest)
     summary.add_row("Private artifacts", str(artifact_dir))
     console.print(summary)
 
@@ -176,6 +183,65 @@ def prepare_application_command(
             settings=settings, job_id=job_id, url=url, headless=headless, fill=fill
         )
     )
+
+
+async def _submit_application(
+    *, settings: Settings, job_id: int, url: str, approval_digest: str, headless: bool
+) -> BrowserExecutionResult:
+    profile = load_profile(settings.profile_path)
+    async with ApplicationBrowser(
+        settings.expanded_home / "browser-profile", headless=headless
+    ) as browser:
+        await browser.open(url)
+        fields = await browser.scan()
+        plan = build_fill_plan(job_id, fields, profile)
+        approval = PlanApproval(job_id=job_id, plan_digest=approval_digest)
+        validate_approval(plan, approval)
+        verified = await browser.fill(plan)
+        result = await browser.submit(plan, approval, verified)
+
+    artifact_dir = settings.expanded_home / "applications" / str(job_id)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "submission-result.json").write_text(
+        result.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    return result
+
+
+@app.command("submit-application")
+def submit_application_command(
+    job_id: int,
+    url: str,
+    approval_digest: str = typer.Option(..., help="Digest from the reviewed current plan"),
+    confirm_submit: bool = typer.Option(
+        False, "--confirm-submit", help="Required explicit authorization to click submit"
+    ),
+    headless: bool = typer.Option(False, help="Run Chrome without showing a window"),
+) -> None:
+    """Rebuild, verify, and submit exactly one explicitly approved application plan."""
+    if not confirm_submit:
+        console.print("Submission blocked: pass --confirm-submit after reviewing the plan")
+        raise typer.Exit(1)
+    settings, _ = _runtime()
+    if not settings.profile_path.exists():
+        console.print("Missing profile. Run: autojobsearch init")
+        raise typer.Exit(1)
+    try:
+        result = asyncio.run(
+            _submit_application(
+                settings=settings,
+                job_id=job_id,
+                url=url,
+                approval_digest=approval_digest,
+                headless=headless,
+            )
+        )
+    except ReviewRequiredError as exc:
+        console.print(f"Submission blocked: {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"Submission result: {result.status.value}")
+    if not result.submitted:
+        console.print("No positive confirmation was observed; the application is not confirmed")
 
 
 @app.command("discover-lever")

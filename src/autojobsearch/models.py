@@ -51,11 +51,17 @@ class Preferences(BaseModel):
     blocked_companies: list[str] = Field(default_factory=list)
 
 
+class Documents(BaseModel):
+    resume: str = ""
+    cover_letter: str = ""
+
+
 class ApplicantProfile(BaseModel):
     person: Person
     preferences: Preferences
     facts: list[ApplicantFact] = Field(default_factory=list)
     approved_answers: dict[str, str] = Field(default_factory=dict)
+    documents: Documents = Field(default_factory=Documents)
 
 
 class JobPosting(BaseModel):

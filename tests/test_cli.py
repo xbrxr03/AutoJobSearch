@@ -54,3 +54,18 @@ def test_discovery_json_flag_prints_full_results(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert '"title": "Software Engineer"' in result.stdout
+
+
+def test_submit_command_requires_explicit_confirmation() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "submit-application",
+            "1",
+            "https://example.com/apply",
+            "--approval-digest",
+            "abc",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "pass --confirm-submit" in result.stdout

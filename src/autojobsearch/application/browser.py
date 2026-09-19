@@ -145,7 +145,10 @@ class ApplicationBrowser:
             elif field_type == "radio":
                 await locator.check()
             elif field_type == "file":
-                raise RuntimeError("File uploads require a resolved local artifact path")
+                file_path = Path(action.value).expanduser().resolve()
+                if not file_path.is_file():
+                    raise RuntimeError(f"Upload file does not exist: {file_path}")
+                await locator.set_input_files(str(file_path))
             else:
                 await locator.fill(action.value)
 
@@ -219,4 +222,7 @@ class ApplicationBrowser:
         if field_type == "checkbox":
             desired = expected.casefold() in {"yes", "true", "1", "checked"}
             return (actual == "checked") is desired
+        if field_type == "file":
+            actual_name = actual.replace("\\", "/").rsplit("/", 1)[-1]
+            return Path(expected).expanduser().name.casefold() == actual_name.casefold()
         return expected.strip().casefold() == actual.strip().casefold()

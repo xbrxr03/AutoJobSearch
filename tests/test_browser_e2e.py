@@ -9,6 +9,8 @@ from autojobsearch.models import ApplicantProfile, JobStatus
 
 @pytest.mark.asyncio
 async def test_local_fixture_scan_fill_verify_and_submit(tmp_path) -> None:
+    resume = tmp_path / "resume.txt"
+    resume.write_text("Sanitized test resume", encoding="utf-8")
     profile = ApplicantProfile.model_validate(
         {
             "person": {
@@ -22,6 +24,7 @@ async def test_local_fixture_scan_fill_verify_and_submit(tmp_path) -> None:
             },
             "preferences": {"target_titles": ["developer"], "locations": ["Toronto"]},
             "approved_answers": {"requires_sponsorship": "No"},
+            "documents": {"resume": str(resume)},
         }
     )
     fixture = Path(__file__).parent / "fixtures" / "simple_application.html"
