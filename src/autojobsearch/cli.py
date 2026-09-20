@@ -15,6 +15,7 @@ from rich.table import Table
 from .application import ReviewRequiredError, build_fill_plan, plan_digest, validate_approval
 from .application.browser import ApplicationBrowser
 from .application.browser_use_executor import submit_with_browser_use
+from .application.browser_use_scanner import scan_with_browser_use
 from .discovery import AshbyDiscovery, GreenhouseDiscovery, LeverDiscovery
 from .llm import OllamaClient, OllamaError
 from .models import ApplicationPlan, BrowserExecutionResult, PlanApproval
@@ -39,6 +40,8 @@ def _canonical_job_url(url: str) -> str:
     path = parsed.path.rstrip("/")
     if path.endswith("/apply"):
         path = path.removesuffix("/apply")
+    if path.endswith("/application"):
+        path = path.removesuffix("/application")
     return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, "", ""))
 
 
@@ -208,6 +211,56 @@ def prepare_application_command(
             settings=settings, job_id=job_id, url=url, headless=headless, fill=fill
         )
     )
+
+
+@app.command("browser-use-prepare")
+def browser_use_prepare_command(
+    job_id: int,
+    url: str,
+    profile_dir: Annotated[
+        Path | None, typer.Option(help="Persistent Chrome profile for browser-use")
+    ] = None,
+    headless: bool = typer.Option(False, help="Run Chrome without showing a window"),
+) -> None:
+    """Scan an application and build its review plan using browser-use, never Playwright."""
+    if profile_dir is None:
+        console.print("Preparation blocked: pass --profile-dir for browser-use")
+        raise typer.Exit(1)
+    settings, store = _runtime()
+    _require_matching_job_url(store, job_id, url)
+    profile = load_profile(settings.profile_path)
+    fields = asyncio.run(
+        scan_with_browser_use(
+            url=url,
+            profile_dir=profile_dir.expanduser().resolve(),
+            headless=headless,
+        )
+    )
+    plan = build_fill_plan(job_id, fields, profile)
+    artifact_dir = settings.expanded_home / "applications" / str(job_id)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "plan.json").write_text(
+        plan.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    digest_path = artifact_dir / "approval-digest.txt"
+    if plan.ready_for_review:
+        digest_path.write_text(plan_digest(plan) + "\n", encoding="utf-8")
+    else:
+        digest_path.unlink(missing_ok=True)
+
+    summary = Table("Browser-use preparation", "Result")
+    summary.add_row("Scanned fields", str(len(fields)))
+    summary.add_row("Planned actions", str(len(plan.actions)))
+    summary.add_row("Unresolved required", str(sum(field.required for field in plan.unresolved)))
+    summary.add_row("Ready for review", str(plan.ready_for_review))
+    summary.add_row("Private artifacts", str(artifact_dir))
+    console.print(summary)
+    required = [field for field in plan.unresolved if field.required]
+    if required:
+        unresolved = Table("Type", "Required field", title="Manual answers needed")
+        for field in required:
+            unresolved.add_row(field.field_type, field.label or field.selector)
+        console.print(unresolved)
 
 
 async def _submit_application(

@@ -45,6 +45,7 @@ class Preferences(BaseModel):
     target_titles: list[str]
     locations: list[str]
     remote_allowed: bool = True
+    remote_only: bool = False
     max_required_years: int = 3
     minimum_score: int = Field(default=60, ge=0, le=100)
     blocked_keywords: list[str] = Field(default_factory=list)

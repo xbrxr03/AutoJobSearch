@@ -16,9 +16,15 @@ class Pipeline:
         self, job: JobPosting
     ) -> tuple[int, HardFilterResult, FitAssessment | None]:
         job_id = self.store.upsert_job(job)
+        existing_status = self.store.job_status(job_id)
         rules = hard_filter(job, self.profile)
         if not rules.accepted:
-            self.store.transition(job_id, JobStatus.REJECTED, rules.model_dump())
+            if existing_status in {
+                JobStatus.DISCOVERED,
+                JobStatus.REJECTED,
+                JobStatus.SHORTLISTED,
+            }:
+                self.store.transition(job_id, JobStatus.REJECTED, rules.model_dump())
             return job_id, rules, None
 
         assessment = self.llm.assess_fit(job, self.profile) if self.llm else None
@@ -29,5 +35,10 @@ class Pipeline:
             else JobStatus.REJECTED
         )
         payload = assessment.model_dump() if assessment else rules.model_dump()
-        self.store.transition(job_id, status, payload)
+        if existing_status in {
+            JobStatus.DISCOVERED,
+            JobStatus.REJECTED,
+            JobStatus.SHORTLISTED,
+        }:
+            self.store.transition(job_id, status, payload)
         return job_id, rules, assessment

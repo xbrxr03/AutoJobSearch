@@ -119,3 +119,10 @@ class Store:
             if row is None:
                 raise KeyError(f"Unknown job id: {job_id}")
             return str(row["url"])
+
+    def job_status(self, job_id: int) -> JobStatus:
+        with self.connect() as connection:
+            row = connection.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown job id: {job_id}")
+            return JobStatus(row["status"])

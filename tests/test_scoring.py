@@ -49,6 +49,11 @@ def test_extract_required_years_ignores_unrelated_company_age() -> None:
     assert extract_required_years(description) == 3
 
 
+def test_extract_required_years_handles_have_and_word_numbers() -> None:
+    assert extract_required_years("You have 5+ years building production systems.") == 5
+    assert extract_required_years("You have at least two years' experience.") == 2
+
+
 def test_accepts_matching_entry_level_job() -> None:
     result = hard_filter(job(), profile())
     assert result.accepted
@@ -61,11 +66,73 @@ def test_rejects_blocked_seniority() -> None:
     assert result.score == 0
 
 
+def test_rejects_abbreviated_seniority() -> None:
+    result = hard_filter(job(title="Sr. Software Engineer"), profile())
+    assert not result.accepted
+    assert result.score == 0
+
+
 def test_seniority_word_in_description_does_not_block_entry_level_title() -> None:
     result = hard_filter(
         job(description="Collaborate with a product manager and senior stakeholders."), profile()
     )
     assert result.accepted
+
+
+def test_rejects_senior_role_hidden_behind_generic_title() -> None:
+    result = hard_filter(
+        job(description="The Role: As a Senior Software Engineer, you will lead delivery."),
+        profile(),
+    )
+    assert not result.accepted
+
+
+def test_remote_only_requires_an_explicit_remote_signal() -> None:
+    applicant = profile()
+    applicant.preferences.remote_only = True
+
+    rejected = hard_filter(job(), applicant)
+    accepted = hard_filter(
+        job(location="Remote Canada", description="This is a fully remote position in Canada."),
+        applicant,
+    )
+    wrong_geography = hard_filter(
+        job(location="New York", description="This is a fully remote position in the US."),
+        applicant,
+    )
+
+    assert not rejected.accepted
+    assert accepted.accepted
+    assert not wrong_geography.accepted
+
+
+def test_remote_only_accepts_country_named_in_title() -> None:
+    applicant = profile()
+    applicant.preferences.remote_only = True
+    result = hard_filter(
+        job(
+            title="Canada - Software Engineer",
+            location="Remote or Mississauga",
+            description="This role may be performed remotely.",
+        ),
+        applicant,
+    )
+    assert result.accepted
+
+
+def test_remote_only_rejects_hybrid_workplace_metadata() -> None:
+    applicant = profile()
+    applicant.preferences.remote_only = True
+    result = hard_filter(
+        job(
+            location="Remote or Mississauga",
+            description="Work from home is available.",
+            metadata={"workplace_type": "hybrid"},
+        ),
+        applicant,
+    )
+    assert not result.accepted
+    assert "hybrid" in result.reasons[-1]
 
 
 def test_rejects_experience_above_limit() -> None:

@@ -16,6 +16,7 @@ def test_lever_discovery() -> None:
                     "hostedUrl": "https://jobs.lever.co/example/abc",
                     "applyUrl": "https://jobs.lever.co/example/abc/apply",
                     "descriptionPlain": "Build APIs.",
+                    "workplaceType": "remote",
                     "categories": {"location": "Toronto", "commitment": "Full-time"},
                 }
             ],
@@ -24,6 +25,8 @@ def test_lever_discovery() -> None:
     jobs = LeverDiscovery().discover("example")
     assert jobs[0].external_id == "abc"
     assert jobs[0].location == "Toronto"
+    assert jobs[0].is_remote is True
+    assert jobs[0].metadata["workplace_type"] == "remote"
 
 
 @respx.mock
@@ -41,6 +44,7 @@ def test_ashby_discovery() -> None:
                         "location": "Remote Canada",
                         "descriptionPlain": "Build reliable services.",
                         "isRemote": True,
+                        "workplaceType": "Remote",
                         "employmentType": "FullTime",
                     }
                 ]
@@ -50,3 +54,4 @@ def test_ashby_discovery() -> None:
     jobs = AshbyDiscovery().discover("example")
     assert jobs[0].is_remote is True
     assert jobs[0].metadata["apply_url"].endswith("/application")
+    assert jobs[0].metadata["workplace_type"] == "Remote"

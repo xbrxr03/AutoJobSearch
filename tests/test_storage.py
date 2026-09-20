@@ -24,6 +24,7 @@ def test_upsert_deduplicates_and_records_transition(tmp_path) -> None:
     assert store.job_url(first) == "https://example.com/jobs/42?source=test"
 
     store.transition(first, JobStatus.SHORTLISTED, {"score": 88})
+    assert store.job_status(first) is JobStatus.SHORTLISTED
 
     connection = sqlite3.connect(store.path)
     assert connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1

@@ -28,7 +28,11 @@ class AshbyDiscovery:
                     description=item.get("descriptionPlain", ""),
                     is_remote=item.get("isRemote"),
                     employment_type=item.get("employmentType"),
-                    metadata={"organization": organization, "apply_url": item.get("applyUrl")},
+                    metadata={
+                        "organization": organization,
+                        "apply_url": item.get("applyUrl"),
+                        "workplace_type": item.get("workplaceType"),
+                    },
                 )
             )
         return jobs

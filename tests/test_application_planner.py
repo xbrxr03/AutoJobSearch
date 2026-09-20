@@ -140,6 +140,14 @@ def test_dynamic_location_combobox_uses_full_profile_location() -> None:
     assert plan.actions[0].value == "Toronto, Ontario, Canada"
 
 
+def test_generic_location_uses_full_profile_location() -> None:
+    field = FormField(
+        selector="#location", label="Location", field_type="text", required=False
+    )
+    plan = build_fill_plan(1, [field], profile())
+    assert plan.actions[0].value == "Toronto, Ontario, Canada"
+
+
 def test_planner_maps_resume_by_selector() -> None:
     applicant = profile().model_copy(deep=True)
     applicant.documents.resume = "/private/resume.pdf"
@@ -147,3 +155,14 @@ def test_planner_maps_resume_by_selector() -> None:
     plan = build_fill_plan(1, [field], applicant)
     assert plan.actions[0].value == "/private/resume.pdf"
     assert plan.actions[0].requires_review
+
+
+def test_other_website_is_not_filled_with_portfolio_url() -> None:
+    applicant = profile().model_copy(deep=True)
+    applicant.person.portfolio_url = "https://example.dev"
+    field = FormField(
+        selector='#other', label="Other website", field_type="text", required=False
+    )
+    plan = build_fill_plan(1, [field], applicant)
+    assert not plan.actions
+    assert plan.unresolved == [field]

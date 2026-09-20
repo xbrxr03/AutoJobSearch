@@ -15,6 +15,7 @@
     "target_titles": ["software engineer", "software developer"],
     "locations": ["Toronto", "Greater Toronto Area", "Remote Canada"],
     "remote_allowed": true,
+    "remote_only": false,
     "max_required_years": 3,
     "minimum_score": 60,
     "blocked_keywords": ["senior", "staff", "principal"],

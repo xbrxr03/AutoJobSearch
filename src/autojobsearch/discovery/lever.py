@@ -38,8 +38,13 @@ class LeverDiscovery:
                     company=site,
                     location=categories.get("location", ""),
                     description=_plain_text(" ".join(description_parts)),
+                    is_remote=item.get("workplaceType", "").casefold() == "remote",
                     employment_type=categories.get("commitment"),
-                    metadata={"site": site, "apply_url": item.get("applyUrl")},
+                    metadata={
+                        "site": site,
+                        "apply_url": item.get("applyUrl"),
+                        "workplace_type": item.get("workplaceType"),
+                    },
                 )
             )
         return jobs

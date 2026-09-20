@@ -1,4 +1,4 @@
-from autojobsearch.models import ApplicantProfile, FitAssessment, JobPosting
+from autojobsearch.models import ApplicantProfile, FitAssessment, JobPosting, JobStatus
 from autojobsearch.pipeline import Pipeline
 from autojobsearch.storage import Store
 
@@ -70,3 +70,23 @@ def test_pipeline_stops_before_llm_when_hard_filter_rejects(tmp_path) -> None:
     _, rules, assessment = pipeline.ingest_and_score(job)
     assert not rules.accepted
     assert assessment is None
+
+
+def test_rediscovery_does_not_regress_confirmed_submission(tmp_path) -> None:
+    store = Store(tmp_path / "pipeline.sqlite3")
+    store.initialize()
+    pipeline = Pipeline(store, profile(), None)
+    job = JobPosting(
+        source="fixture",
+        external_id="3",
+        url="https://example.com/jobs/3",
+        title="Software Engineer",
+        company="Example",
+        location="Toronto",
+    )
+    job_id, _, _ = pipeline.ingest_and_score(job)
+    store.transition(job_id, JobStatus.SUBMISSION_CONFIRMED)
+
+    pipeline.ingest_and_score(job)
+
+    assert store.job_status(job_id) is JobStatus.SUBMISSION_CONFIRMED

@@ -22,7 +22,7 @@ def _profile_values(profile: ApplicantProfile) -> list[tuple[tuple[str, ...], st
         (("email", "email address"), person.email, "profile.person.email"),
         (("phone", "telephone", "mobile"), person.phone, "profile.person.phone"),
         (
-            ("location city", "current location"),
+            ("location", "location city", "current location"),
             f"{person.city}, {person.region}, {person.country}",
             "profile.person.location",
         ),
@@ -36,7 +36,7 @@ def _profile_values(profile: ApplicantProfile) -> list[tuple[tuple[str, ...], st
         (("country",), person.country, "profile.person.country"),
         (("linkedin",), person.linkedin_url, "profile.person.linkedin_url"),
         (("github",), person.github_url, "profile.person.github_url"),
-        (("portfolio", "website"), person.portfolio_url, "profile.person.portfolio_url"),
+        (("portfolio", "personal website"), person.portfolio_url, "profile.person.portfolio_url"),
     ]
 
 

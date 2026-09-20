@@ -9,6 +9,30 @@ from ..models import ApplicationPlan, JobStatus, PlanApproval
 from .review import validate_approval
 
 
+def application_url(url: str) -> str:
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+    if parsed.hostname == "jobs.lever.co" and not path.endswith("/apply"):
+        return f"{url.rstrip('/')}/apply"
+    if parsed.hostname == "jobs.ashbyhq.com" and not path.endswith("/application"):
+        return f"{url.rstrip('/')}/application"
+    return url
+
+
+def allowed_domains(url: str) -> list[str]:
+    hostname = urlparse(url).hostname
+    if not hostname:
+        raise ValueError(f"Application URL has no hostname: {url}")
+    domains = [hostname, "*.hcaptcha.com", "hcaptcha.com", "*.recaptcha.net"]
+    if hostname.endswith("lever.co"):
+        domains.append("*.lever.co")
+    elif hostname.endswith("ashbyhq.com"):
+        domains.append("*.ashbyhq.com")
+    elif hostname.endswith("icims.com"):
+        domains.append("*.icims.com")
+    return domains
+
+
 def _lever_location_alias(url: str, plan: ApplicationPlan) -> tuple[str, str] | None:
     if urlparse(url).hostname != "jobs.lever.co":
         return None
@@ -44,7 +68,8 @@ Use only the field values in this JSON array; do not invent, rewrite, or omit re
 
 Rules:
 1. Navigate only within the application site and its CAPTCHA provider.
-2. Upload the file path supplied for the Resume/CV field.
+2. The pipeline has already uploaded the reviewed Resume/CV. Verify that its filename is visible,
+   but do not type a path into the file control and do not replace the file.
 3. Leave optional fields absent from the JSON blank, including pronouns and demographics.
 4. {location_rule}
 5. For native select fields, use select_dropdown with the exact approved option; never use click.
@@ -74,20 +99,30 @@ async def submit_with_browser_use(
     validate_approval(plan, approval)
 
     from browser_use import Agent, Browser, ChatOllama
-    from browser_use.browser.events import ClickElementEvent, NavigateToUrlEvent, SendKeysEvent
+    from browser_use.browser.events import (
+        ClickElementEvent,
+        NavigateToUrlEvent,
+        SendKeysEvent,
+        UploadFileEvent,
+    )
 
     resume_paths = [
         action.value
         for action in plan.actions
         if "resume" in action.label.casefold() and Path(action.value).is_file()
     ]
+    target_url = application_url(url)
+    browser_options = {
+        "executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "user_data_dir": profile_dir,
+        "profile_directory": "Default",
+        "headless": False,
+        "keep_alive": False,
+    }
+    if urlparse(target_url).hostname == "jobs.lever.co":
+        browser_options["allowed_domains"] = allowed_domains(target_url)
     browser = Browser(
-        executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        user_data_dir=profile_dir,
-        profile_directory="Default",
-        headless=False,
-        keep_alive=False,
-        allowed_domains=["jobs.lever.co", "*.lever.co", "*.hcaptcha.com", "hcaptcha.com"],
+        **browser_options,
     )
     llm = ChatOllama(
         model=model,
@@ -161,20 +196,53 @@ async def submit_with_browser_use(
                 f"Lever location selection was not retained: {selected_value!r}"
             )
 
+    async def upload_reviewed_resume(file_path: str) -> None:
+        state = await browser.get_browser_state_summary(include_screenshot=False)
+        file_input = next(
+            (
+                node
+                for node in state.dom_state.selector_map.values()
+                if node.tag_name.casefold() == "input"
+                and node.attributes.get("type", "").casefold() == "file"
+                and "resume" in node.attributes.get("id", "").casefold()
+            ),
+            None,
+        )
+        if file_input is None:
+            file_input = next(
+                (
+                    node
+                    for node in state.dom_state.selector_map.values()
+                    if node.tag_name.casefold() == "input"
+                    and node.attributes.get("type", "").casefold() == "file"
+                ),
+                None,
+            )
+        if file_input is None:
+            raise RuntimeError("Resume file input was not found")
+        upload = browser.event_bus.dispatch(
+            UploadFileEvent(node=file_input, file_path=file_path)
+        )
+        await upload
+        await upload.event_result(raise_if_any=True, raise_if_none=False)
+        await asyncio.sleep(1.0)
+
     await browser.start()
     try:
-        navigation = browser.event_bus.dispatch(NavigateToUrlEvent(url=url, new_tab=False))
+        navigation = browser.event_bus.dispatch(NavigateToUrlEvent(url=target_url, new_tab=False))
         await navigation
         await navigation.event_result(raise_if_any=True, raise_if_none=False)
         await asyncio.sleep(1.0)
         if location_alias:
             await set_reviewed_lever_location(*location_alias)
+        if resume_paths:
+            await upload_reviewed_resume(resume_paths[0])
     except Exception:
         await browser.kill()
         raise
 
     agent = Agent(
-        task=build_browser_use_task(url, plan),
+        task=build_browser_use_task(target_url, plan),
         llm=llm,
         browser=browser,
         available_file_paths=resume_paths,
@@ -196,7 +264,7 @@ async def submit_with_browser_use(
         max_actions_per_step=3,
         max_failures=5,
     )
-    history = await agent.run(max_steps=40)
+    history = await agent.run(max_steps=15)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     history.save_to_file(artifact_dir / "browser-use-history.json")
     final_result = history.final_result() or "APPLICATION_UNCONFIRMED: no final result"
