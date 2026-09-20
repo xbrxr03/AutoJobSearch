@@ -27,6 +27,14 @@ class LeverDiscovery:
             categories = item.get("categories") or {}
             description_parts = [
                 item.get("descriptionPlain") or item.get("description") or "",
+                *[
+                    " ".join(
+                        part
+                        for part in (section.get("text", ""), section.get("content", ""))
+                        if part
+                    )
+                    for section in item.get("lists") or []
+                ],
                 item.get("additionalPlain") or item.get("additional") or "",
             ]
             jobs.append(

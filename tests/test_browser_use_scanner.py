@@ -45,3 +45,49 @@ def test_parse_scanned_fields_ignores_hidden_controls() -> None:
     assert len(fields) == 1
     assert fields[0].selector == 'select[name="eligible"]'
     assert fields[0].required
+
+
+def test_parse_scanned_fields_collapses_radio_group() -> None:
+    raw = json.dumps(
+        [
+            {
+                "tag": "input",
+                "type": "radio",
+                "id": f"sponsor-{index}",
+                "name": "session_sponsor",
+                "required": True,
+                "label": "Will you require sponsorship?",
+                "options": ["Yes", "No"],
+            }
+            for index in range(2)
+        ]
+    )
+
+    fields = parse_scanned_fields(raw)
+
+    assert len(fields) == 1
+    assert fields[0].selector == 'input[name$="_sponsor"]'
+    assert fields[0].options == ["Yes", "No"]
+
+
+def test_parse_scanned_fields_collapses_checkbox_group() -> None:
+    raw = json.dumps(
+        [
+            {
+                "tag": "input",
+                "type": "checkbox",
+                "id": "",
+                "name": "source",
+                "required": True,
+                "label": "How did you hear about us?",
+                "options": ["Career Site", "Referral"],
+            }
+            for _ in range(2)
+        ]
+    )
+
+    fields = parse_scanned_fields(raw)
+
+    assert len(fields) == 1
+    assert fields[0].selector == 'input[name="source"]'
+    assert fields[0].options == ["Career Site", "Referral"]

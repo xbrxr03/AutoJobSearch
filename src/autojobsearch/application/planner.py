@@ -67,6 +67,8 @@ def build_fill_plan(
     for field in fields:
         label = _normalized(field.label)
         match = _approved_answer(field.label, profile)
+        if label == "which location are you applying for":
+            match = profile.person.country, "profile.person.country"
         if field.field_type == "file":
             selector = _normalized(field.selector)
             if "resume" in selector and profile.documents.resume:
@@ -88,7 +90,13 @@ def build_fill_plan(
             continue
 
         value, source = match
-        if field.field_type in {"select", "combobox"}:
+        if field.field_type == "radio" and not field.options and value.casefold() in {"yes", "no"}:
+            option = label.split(" ", 1)[0]
+            if option in {"yes", "no"} and option != value.casefold():
+                # Ashby exposes each radio option as an input. Retain only the
+                # option matching the reviewed answer.
+                continue
+        if field.field_type in {"select", "combobox", "radio", "checkbox"} and field.options:
             if not field.options and source in {
                 "profile.person.country",
                 "profile.person.location",
@@ -103,7 +111,7 @@ def build_fill_plan(
                 prefix_matches = [
                     option
                     for option in field.options
-                    if option.casefold().startswith(f"{value.casefold()} ")
+                    if _normalized(option).startswith(f"{_normalized(value)} ")
                 ]
                 exact_option = prefix_matches[0] if len(prefix_matches) == 1 else None
             if exact_option is None:

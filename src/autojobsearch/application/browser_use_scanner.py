@@ -9,6 +9,15 @@ from .browser_use_executor import application_url
 
 SCAN_EXPRESSION = r"""
 JSON.stringify([...document.querySelectorAll('input,textarea,select')].map((el) => {
+  const radioGroup = el.type === 'radio'
+    ? el.closest('fieldset.ashby-application-form-input-radio-group') : null;
+  const leverCheckboxGroup = el.type === 'checkbox'
+    ? el.closest('ul[data-qa="checkboxes"]') : null;
+  const yesNoGroup = el.type === 'checkbox' && !leverCheckboxGroup
+    ? el.closest('.ashby-application-form-field-entry') : null;
+  const grouped = radioGroup || leverCheckboxGroup || yesNoGroup;
+  const groupLabel = leverCheckboxGroup?.parentElement?.previousElementSibling ||
+    grouped?.querySelector('.ashby-application-form-question-title');
   const explicit = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
   const wrapping = el.closest('label');
   let ancestorLabel = null;
@@ -30,11 +39,24 @@ JSON.stringify([...document.querySelectorAll('input,textarea,select')].map((el) 
   return {
     tag: el.tagName.toLowerCase(), type: el.type || '', id: el.id || '', name: el.name || '',
     placeholder: el.placeholder || '', role: el.getAttribute('role') || '',
-    required: el.required || el.getAttribute('aria-required') === 'true',
-    label: (explicit?.innerText || wrapping?.innerText || ancestorLabel?.innerText ||
+    required: el.required || el.getAttribute('aria-required') === 'true' ||
+      groupLabel?.className?.includes('_required_'),
+    label: (groupLabel?.innerText || explicit?.innerText || wrapping?.innerText ||
+            ancestorLabel?.innerText ||
             sibling?.innerText ||
             parentSibling?.innerText || container?.innerText || '').trim(),
-    options: el.tagName === 'SELECT' ? [...el.options].map(o => o.text.trim()).filter(Boolean) : []
+    options: el.tagName === 'SELECT'
+      ? [...el.options].map(o => o.text.trim()).filter(Boolean)
+      : radioGroup
+        ? [...radioGroup.querySelectorAll('.ashby-application-form-input-radio-group-option-label')]
+            .map(o => o.innerText.trim()).filter(Boolean)
+        : leverCheckboxGroup
+          ? [...leverCheckboxGroup.querySelectorAll('input[type="checkbox"]')]
+              .map(o => o.value.trim()).filter(Boolean)
+        : yesNoGroup
+          ? [...yesNoGroup.querySelectorAll('button[data-option]')]
+              .map(o => o.innerText.trim()).filter(Boolean)
+          : []
   };
 }))
 """
@@ -45,13 +67,16 @@ def _css_string(value: str) -> str:
 
 
 def _field_selector(item: dict[str, object]) -> str:
-    element_id = str(item.get("id") or "")
-    if element_id:
-        return f'#{_css_string(element_id)}'
     tag = str(item["tag"])
     name = str(item.get("name") or "")
     if name:
+        if str(item.get("type") or "").casefold() == "radio" and "_" in name:
+            stable_name = name.rsplit("_", 1)[1]
+            return f'{tag}[name$="_{_css_string(stable_name)}"]'
         return f'{tag}[name="{_css_string(name)}"]'
+    element_id = str(item.get("id") or "")
+    if element_id:
+        return f"#{_css_string(element_id)}"
     placeholder = str(item.get("placeholder") or "")
     if placeholder:
         return f'{tag}[placeholder="{_css_string(placeholder)}"]'
@@ -61,6 +86,7 @@ def _field_selector(item: dict[str, object]) -> str:
 
 def parse_scanned_fields(raw: str) -> list[FormField]:
     fields: list[FormField] = []
+    seen_choice_groups: set[str] = set()
     for item in json.loads(raw):
         input_type = str(item.get("type") or "text").casefold()
         if input_type == "hidden" or not any(
@@ -69,9 +95,14 @@ def parse_scanned_fields(raw: str) -> list[FormField]:
             continue
         tag = str(item["tag"]).casefold()
         field_type = "select" if tag == "select" else "file" if input_type == "file" else input_type
+        selector = _field_selector(item)
+        if field_type in {"radio", "checkbox"} and item.get("options"):
+            if selector in seen_choice_groups:
+                continue
+            seen_choice_groups.add(selector)
         fields.append(
             FormField(
-                selector=_field_selector(item),
+                selector=selector,
                 label=str(item.get("label") or item.get("name") or "").strip(),
                 field_type=field_type,
                 required=bool(item.get("required")),

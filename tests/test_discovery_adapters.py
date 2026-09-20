@@ -16,6 +16,12 @@ def test_lever_discovery() -> None:
                     "hostedUrl": "https://jobs.lever.co/example/abc",
                     "applyUrl": "https://jobs.lever.co/example/abc/apply",
                     "descriptionPlain": "Build APIs.",
+                    "lists": [
+                        {
+                            "text": "Requirements",
+                            "content": "<ul><li>2+ years with Python.</li></ul>",
+                        }
+                    ],
                     "workplaceType": "remote",
                     "categories": {"location": "Toronto", "commitment": "Full-time"},
                 }
@@ -26,6 +32,8 @@ def test_lever_discovery() -> None:
     assert jobs[0].external_id == "abc"
     assert jobs[0].location == "Toronto"
     assert jobs[0].is_remote is True
+    assert "Requirements" in jobs[0].description
+    assert "2+ years with Python." in jobs[0].description
     assert jobs[0].metadata["workplace_type"] == "remote"
 
 
