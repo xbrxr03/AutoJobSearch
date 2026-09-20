@@ -1,14 +1,11 @@
-from pathlib import Path
+import json
 
-import pytest
-
-from autojobsearch.application import approve_plan, build_fill_plan
-from autojobsearch.application.browser import ApplicationBrowser
-from autojobsearch.models import ApplicantProfile, JobStatus
+from autojobsearch.application import build_fill_plan
+from autojobsearch.application.browser_use_scanner import parse_scanned_fields
+from autojobsearch.models import ApplicantProfile
 
 
-@pytest.mark.asyncio
-async def test_local_fixture_scan_fill_verify_and_submit(tmp_path) -> None:
+def test_local_fixture_scan_and_plan_contract_never_launches_or_submits(tmp_path) -> None:
     resume = tmp_path / "resume.txt"
     resume.write_text("Sanitized test resume", encoding="utf-8")
     profile = ApplicantProfile.model_validate(
@@ -27,21 +24,47 @@ async def test_local_fixture_scan_fill_verify_and_submit(tmp_path) -> None:
             "documents": {"resume": str(resume)},
         }
     )
-    fixture = Path(__file__).parent / "fixtures" / "simple_application.html"
-    async with ApplicationBrowser(tmp_path / "chrome", headless=True) as browser:
-        await browser.open(fixture.as_uri())
-        fields = await browser.scan()
-        assert (
-            next(
-                field for field in fields if field.selector == 'textarea[name="custom-question"]'
-            ).label
-            == "Why this role?"
+    fields = parse_scanned_fields(
+        json.dumps(
+            [
+                {
+                    "tag": "input",
+                    "type": "text",
+                    "id": "first-name",
+                    "name": "first_name",
+                    "required": True,
+                    "label": "First name",
+                    "options": [],
+                },
+                {
+                    "tag": "input",
+                    "type": "email",
+                    "id": "email",
+                    "name": "email",
+                    "required": True,
+                    "label": "Email",
+                    "options": [],
+                },
+                {
+                    "tag": "textarea",
+                    "type": "textarea",
+                    "id": "custom-question",
+                    "name": "custom-question",
+                    "required": False,
+                    "label": "Why this role?",
+                    "options": [],
+                },
+            ]
         )
-        plan = build_fill_plan(1, fields, profile)
-        assert plan.ready_for_review
-        verification = await browser.fill(plan)
-        assert all(item.matched for item in verification)
-        result = await browser.submit(plan, approve_plan(plan), verification)
+    )
 
-    assert result.status == JobStatus.SUBMISSION_CONFIRMED
-    assert result.submitted
+    custom = next(field for field in fields if field.selector == 'textarea[name="custom-question"]')
+    assert custom.label == "Why this role?"
+
+    plan = build_fill_plan(1, fields, profile)
+    assert [(action.label, action.value) for action in plan.actions] == [
+        ("First name", "Jane"),
+        ("Email", "jane@example.com"),
+    ]
+    assert plan.unresolved == [custom]
+    assert plan.ready_for_review

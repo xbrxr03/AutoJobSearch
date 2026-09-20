@@ -16,9 +16,14 @@ from .application import ReviewRequiredError, build_fill_plan, plan_digest, vali
 from .application.browser import ApplicationBrowser
 from .application.browser_use_executor import submit_with_browser_use
 from .application.browser_use_scanner import scan_with_browser_use
+from .application.indeed_executor import run_indeed_apply
+from .application.linkedin import run_linkedin_easy_apply
+from .decision_bench import load_decision_cases, run_decision_benchmark
+from .decisions import DecisionEngine
 from .discovery import AshbyDiscovery, GreenhouseDiscovery, LeverDiscovery
+from .job_boards import JobBoard, JobBoardRunConfig
 from .llm import OllamaClient, OllamaError
-from .models import ApplicationPlan, BrowserExecutionResult, PlanApproval
+from .models import ApplicationPlan, BrowserExecutionResult, JobStatus, PlanApproval
 from .pipeline import Pipeline
 from .profile import load_profile
 from .settings import Settings
@@ -93,6 +98,43 @@ def doctor() -> None:
     except OllamaError as exc:
         table.add_row("Ollama", str(exc))
     console.print(table)
+
+
+@app.command("benchmark-decisions")
+def benchmark_decisions(
+    trace_path: Path,
+    model: str | None = typer.Option(None, help="Local Ollama model to benchmark"),
+) -> None:
+    """Run saved closed-decision traces against a local Ollama model."""
+    settings, _ = _runtime()
+    cases = load_decision_cases(trace_path)
+    model_name = model or settings.ollama_model
+    engine = DecisionEngine(
+        OllamaClient(settings.ollama_base_url, model_name),
+        provider_name="ollama",
+        model=model_name,
+    )
+    report = run_decision_benchmark(cases, engine)
+
+    summary = Table("Metric", "Value")
+    summary.add_row("Cases", str(report.total))
+    summary.add_row("Passed", str(report.passed))
+    summary.add_row("Failed", str(report.failed))
+    summary.add_row("Average latency", f"{report.average_elapsed_ms} ms")
+    console.print(summary)
+
+    failures = [result for result in report.results if not result.passed]
+    if failures:
+        failed = Table("Case", "Expected", "Actual", "Route", "Confidence")
+        for result in failures:
+            failed.add_row(
+                result.name,
+                result.expected.model_dump_json(exclude_none=True),
+                result.actual.model_dump_json(exclude_none=True),
+                result.route.value,
+                f"{result.confidence:.2f}",
+            )
+        console.print(failed)
 
 
 @app.command("discover-greenhouse")
@@ -378,6 +420,148 @@ def browser_use_submit_command(
     )
     console.print(f"Submission result: {status.value}")
     console.print(result)
+
+
+@app.command("indeed-apply")
+def indeed_apply_command(
+    job_id: int,
+    url: str,
+    resume_path: Annotated[
+        Path, typer.Option(exists=True, dir_okay=False, readable=True)
+    ],
+    profile_dir: Annotated[
+        Path,
+        typer.Option(
+            exists=True, file_okay=False, readable=True, help="Real Chrome user-data directory"
+        ),
+    ],
+    profile_directory: str = typer.Option("Default", help="Chrome profile directory name"),
+    confirm_submit: bool = typer.Option(
+        False, "--confirm-submit", help="Required authorization for an Indeed submission"
+    ),
+    model: str | None = typer.Option(None, help="Local Ollama browser model"),
+    max_listings: int = typer.Option(5, min=1, max=25),
+) -> None:
+    """Search/apply through Indeed only, with local inference and strict stop states."""
+    if not confirm_submit:
+        console.print("Submission blocked: pass --confirm-submit")
+        raise typer.Exit(1)
+    settings, store = _runtime()
+    _require_matching_job_url(store, job_id, url)
+    profile = load_profile(settings.profile_path)
+    config = JobBoardRunConfig(
+        board=JobBoard.INDEED,
+        search_url=url,
+        resume_path=resume_path.expanduser().resolve(),
+        max_applications=1,
+        max_listings_to_check=max_listings,
+    )
+    model_name = model or settings.ollama_model
+    artifact_dir = settings.expanded_home / "applications" / str(job_id)
+    store.transition(job_id, JobStatus.FILLING, {"executor": "browser-use-indeed"})
+    try:
+        result = asyncio.run(
+            run_indeed_apply(
+                config=config,
+                profile=profile,
+                model=model_name,
+                ollama_base_url=settings.ollama_base_url,
+                profile_dir=profile_dir.expanduser().resolve(),
+                profile_directory=profile_directory,
+                artifact_dir=artifact_dir,
+            )
+        )
+    except Exception as exc:
+        store.transition(
+            job_id,
+            JobStatus.FAILED,
+            {"executor": "browser-use-indeed", "error": type(exc).__name__, "detail": str(exc)},
+        )
+        console.print(f"Indeed run failed: {exc}")
+        raise typer.Exit(1) from exc
+    store.transition(
+        job_id,
+        result.status,
+        {
+            "executor": "browser-use-indeed",
+            "model": model_name,
+            "outcome": result.outcome.value,
+            "history": str(result.history_path),
+            "detail": result.detail,
+        },
+    )
+    console.print(f"Indeed result: {result.outcome.value} ({result.status.value})")
+
+
+@app.command("linkedin-easy-apply")
+def linkedin_easy_apply_command(
+    job_id: int,
+    confirm_submit: bool = typer.Option(
+        False, "--confirm-submit", help="Required authorization to submit this application"
+    ),
+    model: str | None = typer.Option(None, help="Local Ollama browser model"),
+    profile_dir: Annotated[
+        Path | None, typer.Option(help="Chrome user-data directory for the logged-in profile")
+    ] = None,
+    profile_name: str = typer.Option("Default", help="Chrome profile directory name"),
+) -> None:
+    """Apply to one stored LinkedIn listing through its inline Easy Apply modal."""
+    if not confirm_submit:
+        console.print("Submission blocked: pass --confirm-submit for this LinkedIn application")
+        raise typer.Exit(1)
+    if profile_dir is None:
+        console.print("Submission blocked: pass your real Chrome --profile-dir")
+        raise typer.Exit(1)
+
+    settings, store = _runtime()
+    if not settings.profile_path.exists():
+        console.print("Missing profile. Run: autojobsearch init")
+        raise typer.Exit(1)
+    profile = load_profile(settings.profile_path)
+    resume_path = Path(profile.documents.resume).expanduser()
+    url = store.job_url(job_id)
+    artifact_dir = settings.expanded_home / "applications" / str(job_id)
+    model_name = model or settings.ollama_model
+
+    store.transition(
+        job_id,
+        JobStatus.FILLING,
+        {"executor": "browser-use-linkedin", "model": model_name, "url": url},
+    )
+    try:
+        result = asyncio.run(
+            run_linkedin_easy_apply(
+                url=url,
+                profile=profile,
+                resume_path=resume_path,
+                model=model_name,
+                ollama_base_url=settings.ollama_base_url,
+                profile_dir=profile_dir.expanduser().resolve(),
+                profile_name=profile_name,
+                artifact_dir=artifact_dir,
+            )
+        )
+    except Exception as exc:
+        store.transition(
+            job_id,
+            JobStatus.FAILED,
+            {"executor": "browser-use-linkedin", "error": str(exc)},
+        )
+        console.print(f"LinkedIn run failed safely: {exc}")
+        raise typer.Exit(1) from exc
+
+    store.transition(
+        job_id,
+        result.status,
+        {
+            "executor": "browser-use-linkedin",
+            "model": model_name,
+            "outcome": result.outcome.value,
+            "history": str(result.history_path),
+        },
+    )
+    console.print(f"LinkedIn result: {result.outcome.value} ({result.status.value})")
+    console.print(result.detail)
 
 
 @app.command("discover-lever")

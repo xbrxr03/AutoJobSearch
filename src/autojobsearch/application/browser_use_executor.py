@@ -101,6 +101,15 @@ Rules:
 """
 
 
+def browser_use_result_status(final_result: str) -> JobStatus:
+    """Classify only the agent's explicit result token, never incidental prose."""
+    submitted = any(
+        re.fullmatch(r"APPLICATION_SUBMITTED(?:\s*:.*)?", line.strip(), re.IGNORECASE)
+        for line in final_result.splitlines()
+    )
+    return JobStatus.SUBMISSION_CONFIRMED if submitted else JobStatus.UNCERTAIN
+
+
 async def submit_with_browser_use(
     *,
     url: str,
@@ -686,6 +695,5 @@ JSON.stringify({
     artifact_dir.mkdir(parents=True, exist_ok=True)
     history.save_to_file(artifact_dir / "browser-use-history.json")
     final_result = history.final_result() or "APPLICATION_UNCONFIRMED: no final result"
-    confirmed = "APPLICATION_SUBMITTED" in final_result.upper()
-    status = JobStatus.SUBMISSION_CONFIRMED if confirmed else JobStatus.UNCERTAIN
+    status = browser_use_result_status(final_result)
     return status, final_result
