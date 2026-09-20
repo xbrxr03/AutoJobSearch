@@ -430,11 +430,9 @@ def indeed_apply_command(
         Path, typer.Option(exists=True, dir_okay=False, readable=True)
     ],
     profile_dir: Annotated[
-        Path,
-        typer.Option(
-            exists=True, file_okay=False, readable=True, help="Real Chrome user-data directory"
-        ),
-    ],
+        Path | None,
+        typer.Option(help="Deprecated; browser-harness attaches to normal authenticated Chrome"),
+    ] = None,
     profile_directory: str = typer.Option("Default", help="Chrome profile directory name"),
     confirm_submit: bool = typer.Option(
         False, "--confirm-submit", help="Required authorization for an Indeed submission"
@@ -466,9 +464,14 @@ def indeed_apply_command(
                 profile=profile,
                 model=model_name,
                 ollama_base_url=settings.ollama_base_url,
-                profile_dir=profile_dir.expanduser().resolve(),
+                profile_dir=(
+                    profile_dir.expanduser().resolve()
+                    if profile_dir
+                    else settings.expanded_home / "browser-profile"
+                ),
                 profile_directory=profile_directory,
                 artifact_dir=artifact_dir,
+                bh_home=settings.expanded_home / "browser-harness",
             )
         )
     except Exception as exc:
@@ -509,10 +512,6 @@ def linkedin_easy_apply_command(
     if not confirm_submit:
         console.print("Submission blocked: pass --confirm-submit for this LinkedIn application")
         raise typer.Exit(1)
-    if profile_dir is None:
-        console.print("Submission blocked: pass your real Chrome --profile-dir")
-        raise typer.Exit(1)
-
     settings, store = _runtime()
     if not settings.profile_path.exists():
         console.print("Missing profile. Run: autojobsearch init")
@@ -536,9 +535,14 @@ def linkedin_easy_apply_command(
                 resume_path=resume_path,
                 model=model_name,
                 ollama_base_url=settings.ollama_base_url,
-                profile_dir=profile_dir.expanduser().resolve(),
+                profile_dir=(
+                    profile_dir.expanduser().resolve()
+                    if profile_dir
+                    else settings.expanded_home / "browser-profile"
+                ),
                 profile_name=profile_name,
                 artifact_dir=artifact_dir,
+                bh_home=settings.expanded_home / "browser-harness",
             )
         )
     except Exception as exc:

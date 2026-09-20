@@ -1,5 +1,6 @@
+import json
+import subprocess
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -73,12 +74,8 @@ async def test_runner_uses_local_ollama_persistent_chrome_and_never_really_submi
     resume.write_bytes(b"fixture")
     chrome = tmp_path / "Chrome"
     chrome.mkdir()
-    history = MagicMock()
-    history.final_result.return_value = "No match. STOP_NO_MATCH"
-    history.save_to_file = lambda path: path.write_text("{}", encoding="utf-8")
-    agent = AsyncMock()
-    agent.run.return_value = history
-    browser = AsyncMock()
+    (chrome / "Profile 2").mkdir()
+    captured = {}
 
     config = JobBoardRunConfig(
         board=JobBoard.INDEED,
@@ -87,30 +84,47 @@ async def test_runner_uses_local_ollama_persistent_chrome_and_never_really_submi
         max_applications=1,
         max_listings_to_check=2,
     )
-    with (
-        patch("browser_use.Browser", return_value=browser) as browser_cls,
-        patch("browser_use.ChatOllama") as ollama_cls,
-        patch("browser_use.Agent", return_value=agent),
-    ):
-        result = await run_indeed_apply(
-            config=config,
-            profile=_profile(resume),
-            model="qwen-test",
-            ollama_base_url="http://127.0.0.1:11434",
-            profile_dir=chrome,
-            profile_directory="Profile 2",
-            artifact_dir=tmp_path / "artifacts",
+
+    def fake_subprocess(command, *, input, cwd, env, timeout):
+        captured["command"] = command
+        captured["script"] = input
+        captured["env"] = env
+        config_path = tmp_path / "artifacts" / "browser-harness-config.json"
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        Path(payload["history_path"]).write_text("{}", encoding="utf-8")
+        Path(payload["result_path"]).write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "final_result": "No match. STOP_NO_MATCH",
+                    "history_path": payload["history_path"],
+                }
+            ),
+            encoding="utf-8",
         )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    result = await run_indeed_apply(
+        config=config,
+        profile=_profile(resume),
+        model="qwen-test",
+        ollama_base_url="http://127.0.0.1:11434",
+        profile_dir=chrome,
+        profile_directory="Profile 2",
+        artifact_dir=tmp_path / "artifacts",
+        subprocess_runner=fake_subprocess,
+    )
 
     assert result.outcome is IndeedOutcome.STOP_NO_MATCH
     assert result.status is JobStatus.REJECTED
-    ollama_cls.assert_called_once_with(
-        model="qwen-test",
-        host="http://127.0.0.1:11434",
-        timeout=180.0,
-        ollama_options={"temperature": 0, "num_ctx": 32768},
+    assert captured["command"] == ("uv", "run", "browser-use")
+    assert captured["env"]["BH_TAB_MARKER"] == "0"
+    assert "keep_alive=True" in captured["script"]
+    harness_config = json.loads(
+        (tmp_path / "artifacts" / "browser-harness-config.json").read_text()
     )
-    assert browser_cls.call_args.kwargs["user_data_dir"] == chrome
-    assert browser_cls.call_args.kwargs["profile_directory"] == "Profile 2"
-    assert browser_cls.call_args.kwargs["allowed_domains"] == ["indeed.com", "*.indeed.com"]
-    browser.kill.assert_awaited_once()
+    assert harness_config["model"] == "qwen-test"
+    assert harness_config["ollama_base_url"] == "http://127.0.0.1:11434"
+    assert harness_config["allowed_domains"] == ["indeed.com", "*.indeed.com"]
+    assert harness_config["available_file_paths"] == [str(resume)]
+    assert harness_config["max_steps"] == 12

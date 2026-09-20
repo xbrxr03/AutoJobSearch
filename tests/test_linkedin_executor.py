@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -81,30 +83,29 @@ async def test_runner_uses_persistent_profile_and_local_ollama_without_real_brow
     resume.write_bytes(b"%PDF fixture")
     chrome = tmp_path / "Chrome"
     chrome.mkdir()
+    (chrome / "Profile 2").mkdir()
     captured: dict = {}
 
-    class FakeHistory:
-        def final_result(self) -> str:
-            return "MANUAL_ACTION_REQUIRED: sign-in checkpoint"
-
-        def save_to_file(self, path: Path) -> None:
-            Path(path).write_text("{}", encoding="utf-8")
-
-    class FakeAgent:
-        def __init__(self, **kwargs) -> None:
-            captured["agent"] = kwargs
-
-        async def run(self, max_steps: int):
-            captured["max_steps"] = max_steps
-            return FakeHistory()
-
-    def fake_browser(**kwargs):
-        captured["browser"] = kwargs
-        return object()
-
-    def fake_llm(**kwargs):
-        captured["llm"] = kwargs
-        return object()
+    def fake_subprocess(command, *, input, cwd, env, timeout):
+        captured["command"] = command
+        captured["script"] = input
+        captured["cwd"] = cwd
+        captured["env"] = env
+        captured["timeout"] = timeout
+        config_path = tmp_path / "artifacts" / "browser-harness-config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        Path(config["history_path"]).write_text("{}", encoding="utf-8")
+        Path(config["result_path"]).write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "final_result": "MANUAL_ACTION_REQUIRED: sign-in checkpoint",
+                    "history_path": config["history_path"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     result = await run_linkedin_easy_apply(
         url="https://www.linkedin.com/jobs/view/123/",
@@ -115,17 +116,20 @@ async def test_runner_uses_persistent_profile_and_local_ollama_without_real_brow
         profile_dir=chrome,
         profile_name="Profile 2",
         artifact_dir=tmp_path / "artifacts",
-        agent_factory=FakeAgent,
-        browser_factory=fake_browser,
-        llm_factory=fake_llm,
+        subprocess_runner=fake_subprocess,
     )
 
     assert result.status == JobStatus.MANUAL_ACTION
-    assert captured["browser"]["user_data_dir"] == chrome
-    assert captured["browser"]["profile_directory"] == "Profile 2"
-    assert captured["llm"]["model"] == "qwen-local"
-    assert captured["llm"]["host"] == "http://127.0.0.1:11434"
-    assert captured["agent"]["available_file_paths"] == [str(resume)]
-    assert "Do not open or apply to any other listing" in captured["agent"]["task"]
-    assert captured["max_steps"] == 40
+    assert captured["command"] == ("uv", "run", "browser-use")
+    assert captured["env"]["BH_TAB_MARKER"] == "0"
+    assert captured["env"]["BH_HOME"] == str((tmp_path / "artifacts/browser-harness").resolve())
+    assert "from browser_harness.daemon import get_ws_url" in captured["script"]
+    assert "cdp_url=get_ws_url()" in captured["script"]
+    config = json.loads((tmp_path / "artifacts" / "browser-harness-config.json").read_text())
+    assert config["model"] == "qwen-local"
+    assert config["ollama_base_url"] == "http://127.0.0.1:11434"
+    assert config["allowed_domains"] == ["linkedin.com", "*.linkedin.com"]
+    assert config["available_file_paths"] == [str(resume)]
+    assert "Do not open or apply to any other listing" in config["task"]
+    assert config["max_steps"] == 40
     assert result.history_path.is_file()
