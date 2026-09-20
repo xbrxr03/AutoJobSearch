@@ -37,5 +37,5 @@ def test_browser_use_task_documents_reviewed_lever_location_alias() -> None:
 
     task = build_browser_use_task("https://jobs.lever.co/example/apply", plan)
 
-    assert "Toronto, ON, CAN" in task
+    assert "Scarborough, Ontario, Canada" in task
     assert "handled by the pipeline" in task

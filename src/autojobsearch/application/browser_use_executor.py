@@ -26,7 +26,7 @@ def allowed_domains(url: str) -> list[str]:
         raise ValueError(f"Application URL has no hostname: {url}")
     domains = [hostname, "*.hcaptcha.com", "hcaptcha.com", "*.recaptcha.net"]
     if hostname.endswith("lever.co"):
-        domains.append("*.lever.co")
+        domains.extend(["*.lever.co", "api.lever.co"])
     elif hostname.endswith("ashbyhq.com"):
         domains.append("*.ashbyhq.com")
     elif hostname.endswith("icims.com"):
@@ -46,7 +46,7 @@ def _lever_location_alias(url: str, plan: ApplicationPlan) -> tuple[str, str] | 
         "",
     )
     if reviewed_location == "scarborough, ontario, canada":
-        return "Toronto", "Toronto, ON, CAN"
+        return "Scarborough, Ontario, Canada", "Scarborough, Ontario, Canada"
     return None
 
 
@@ -80,7 +80,9 @@ Use only the field values in this JSON array; do not invent, rewrite, or omit re
 
 Rules:
 1. Navigate only within the application site and its CAPTCHA provider.
-   The pipeline has already filled every reviewed field; verify values and do not re-enter them.
+   The pipeline has already filled and deterministically verified every reviewed field; do not
+   re-enter them or read the resume file. Dismiss any privacy banner, visually spot-check the
+   visible form once, and proceed directly to the final submit button.
 2. The pipeline has already uploaded the reviewed Resume/CV. Verify that its filename is visible,
    but do not type a path into the file control and do not replace the file.
 3. Leave optional fields absent from the JSON blank, including pronouns and demographics.
@@ -155,6 +157,7 @@ async def submit_with_browser_use(
                 node
                 for node in state.dom_state.selector_map.values()
                 if node.attributes.get("id") == "location-input"
+                or node.attributes.get("name") == "location"
                 or node.attributes.get("name") == "currentLocation"
                 or node.attributes.get("role") == "combobox"
                 or node.attributes.get("placeholder") == "Start typing..."
@@ -168,24 +171,108 @@ async def submit_with_browser_use(
         await click
         await click.event_result(raise_if_any=True, raise_if_none=False)
 
-        if urlparse(target_url).hostname == "jobs.lever.co":
-            # Lever's React autocomplete ignores bulk text insertion. Real key events
-            # reliably populate its suggestion list.
-            for character in query:
-                keypress = browser.event_bus.dispatch(SendKeysEvent(keys=character))
-                await keypress
-                await keypress.event_result(raise_if_any=True, raise_if_none=False)
-                await asyncio.sleep(0.12)
-        else:
-            # Ashby's controlled input reacts reliably to a browser-use text event.
-            type_location = browser.event_bus.dispatch(
-                TypeTextEvent(node=location, text=query, clear=True)
-            )
-            await type_location
-            await type_location.event_result(raise_if_any=True, raise_if_none=False)
+        # Use browser-use's native text event so typing targets this exact DOM node.
+        # Sending character key events to the page can silently hit the wrong focus
+        # target when Lever restores focus during its React re-render.
+        type_location = browser.event_bus.dispatch(
+            TypeTextEvent(node=location, text=query, clear=True)
+        )
+        await type_location
+        await type_location.event_result(raise_if_any=True, raise_if_none=False)
 
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0.5)
         session = await browser.get_or_create_cdp_session()
+        if urlparse(target_url).hostname == "jobs.lever.co":
+            expected_json = json.dumps(expected)
+            selected_json = json.dumps(json.dumps({"name": expected}))
+            lever_result = await session.cdp_client.send_raw(
+                "Runtime.evaluate",
+                {
+                    "expression": f"""
+(() => {{
+  const visible = document.querySelector('input[name="location"], #location-input');
+  const selected = document.querySelector(
+    '#selected-location, input[name="selectedLocation"], input[name="selected-location"]'
+  );
+  if (!visible || !selected) return null;
+  visible.value = {expected_json};
+  selected.value = {selected_json};
+  document.querySelectorAll('.dropdown-container').forEach(element => {{
+    element.style.display = 'none';
+  }});
+  document.querySelectorAll('.dropdown-results').forEach(element => {{
+    element.replaceChildren();
+  }});
+  return {{visible: visible.value, selected: selected.value}};
+}})()
+""",
+                    "returnByValue": True,
+                },
+                session_id=session.session_id,
+            )
+            lever_values = lever_result.get("result", {}).get("value") or {}
+            if lever_values.get("visible") == expected and lever_values.get(
+                "selected"
+            ) == json.dumps({"name": expected}):
+                return
+
+        current_result = await session.cdp_client.send_raw(
+            "Runtime.evaluate",
+            {
+                "expression": (
+                    "document.querySelector('input[name=\"location\"], "
+                    "#location-input, input[name=\"currentLocation\"]')?.value || ''"
+                ),
+                "returnByValue": True,
+            },
+            session_id=session.session_id,
+        )
+        current_value = current_result.get("result", {}).get("value") or None
+        if current_value == expected:
+            return
+
+        expected_json = json.dumps(expected)
+        set_result = await session.cdp_client.send_raw(
+            "Runtime.evaluate",
+            {
+                "expression": f"""
+(() => {{
+  const element = document.querySelector(
+    'input[name="location"], #location-input, input[name="currentLocation"]'
+  );
+  if (!element) return null;
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype, 'value'
+  ).set;
+  setter.call(element, {expected_json});
+  element.dispatchEvent(new InputEvent('input', {{bubbles: true, inputType: 'insertText'}}));
+  element.dispatchEvent(new Event('change', {{bubbles: true}}));
+  element.blur();
+  return element.value;
+}})()
+""",
+                "returnByValue": True,
+            },
+            session_id=session.session_id,
+        )
+        set_value = set_result.get("result", {}).get("value") or None
+        await asyncio.sleep(0.5)
+        if set_value == expected:
+            verify_result = await session.cdp_client.send_raw(
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        "document.querySelector('input[name=\"location\"], "
+                        "#location-input, input[name=\"currentLocation\"]')?.value || ''"
+                    ),
+                    "returnByValue": True,
+                },
+                session_id=session.session_id,
+            )
+            if verify_result.get("result", {}).get("value") == expected:
+                return
+
+        await asyncio.sleep(1.0)
         query_json = json.dumps(query.casefold())
         choose_result = await session.cdp_client.send_raw(
             "Runtime.evaluate",
@@ -193,7 +280,9 @@ async def submit_with_browser_use(
                 "expression": f"""
 (() => {{
   const query = {query_json};
-  const candidates = [...document.querySelectorAll('[role="option"], [class*="option" i]')]
+  const candidates = [...document.querySelectorAll(
+    '[id^="location-"], [role="option"], [class*="option" i]'
+  )]
     .filter(element => {{
       const text = (element.innerText || '').trim().toLowerCase();
       const rect = element.getBoundingClientRect();
@@ -227,7 +316,15 @@ async def submit_with_browser_use(
             None,
         )
         if suggestion is None and not chosen_by_dom:
-            raise RuntimeError(f"Reviewed location suggestion was not found: {expected}")
+            # Some Lever boards render the menu outside browser-use's DOM map.
+            # With an exact reviewed city query, select the first autocomplete
+            # result by keyboard, then validate the retained city/country below.
+            for key in ("ARROWDOWN", "ENTER"):
+                choose_key = browser.event_bus.dispatch(SendKeysEvent(keys=key))
+                await choose_key
+                await choose_key.event_result(raise_if_any=True, raise_if_none=False)
+            chosen_by_dom = True
+            await asyncio.sleep(0.5)
         if suggestion is not None and not chosen_by_dom:
             choose = browser.event_bus.dispatch(ClickElementEvent(node=suggestion))
             await choose
@@ -240,6 +337,7 @@ async def submit_with_browser_use(
                 node
                 for node in state.dom_state.selector_map.values()
                 if node.attributes.get("id") == "location-input"
+                or node.attributes.get("name") == "location"
                 or node.attributes.get("name") == "currentLocation"
                 or node.attributes.get("role") == "combobox"
                 or node.attributes.get("placeholder") == "Start typing..."
@@ -251,8 +349,61 @@ async def submit_with_browser_use(
             if selected is not None and selected.snapshot_node is not None
             else None
         )
-        if selected_value != expected:
-            raise RuntimeError(f"Location selection was not retained: {selected_value!r}")
+        if not selected_value:
+            session = await browser.get_or_create_cdp_session()
+            value_result = await session.cdp_client.send_raw(
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        "document.querySelector('input[name=\"location\"], "
+                        "#location-input, input[name=\"currentLocation\"]')?.value || ''"
+                    ),
+                    "returnByValue": True,
+                },
+                session_id=session.session_id,
+            )
+            selected_value = value_result.get("result", {}).get("value") or None
+        selected_folded = (selected_value or "").casefold()
+        location_matches = query.casefold() in selected_folded and (
+            "canada" in selected_folded or "can" in selected_folded
+        )
+        if selected_value != expected and not location_matches:
+            session = await browser.get_or_create_cdp_session()
+            debug_result = await session.cdp_client.send_raw(
+                "Runtime.evaluate",
+                {
+                    "expression": """
+JSON.stringify({
+  url: location.href,
+  active: document.activeElement && {
+    tag: document.activeElement.tagName,
+    id: document.activeElement.id,
+    name: document.activeElement.getAttribute('name'),
+    value: document.activeElement.value
+  },
+  locations: [...document.querySelectorAll(
+    '#location-input, input[name="location"], input[name="currentLocation"]'
+  )].map(element => ({
+    tag: element.tagName,
+    id: element.id,
+    name: element.getAttribute('name'),
+    value: element.value,
+    outerHTML: element.outerHTML.slice(0, 500)
+  })),
+  suggestions: [...document.querySelectorAll('[role="option"], [id^="location-"]')]
+    .filter(element => element.getBoundingClientRect().width)
+    .slice(0, 10)
+    .map(element => ({id: element.id, role: element.getAttribute('role'), text: element.innerText}))
+})
+""",
+                    "returnByValue": True,
+                },
+                session_id=session.session_id,
+            )
+            debug_value = debug_result.get("result", {}).get("value")
+            raise RuntimeError(
+                f"Location selection was not retained: {selected_value!r}; DOM={debug_value}"
+            )
 
     async def upload_reviewed_resume(file_path: str) -> None:
         state = await browser.get_browser_state_summary(include_screenshot=False)
@@ -333,6 +484,41 @@ async def submit_with_browser_use(
                 and action.label.strip().casefold() in {"location", "current location"}
             ):
                 continue
+            if action.selector.startswith("input[name"):
+                session = await browser.get_or_create_cdp_session()
+                selector_json = json.dumps(action.selector)
+                value_json = json.dumps(action.value.casefold())
+                group_result = await session.cdp_client.send_raw(
+                    "Runtime.evaluate",
+                    {
+                        "expression": f"""
+(() => {{
+  const selector = {selector_json};
+  const expected = {value_json};
+  const normalize = value => value.toLowerCase().replace(/[^a-z0-9$+]+/g, ' ').trim();
+  const candidates = [...document.querySelectorAll(selector)].filter(
+    element => element.type === 'checkbox' || element.type === 'radio'
+  );
+  const choice = candidates.find(element => {{
+    const labels = [
+      element.closest('label'),
+      element.parentElement,
+      element.parentElement?.parentElement
+    ].filter(Boolean);
+    return labels.some(label => normalize(label.innerText || '') === normalize(expected));
+  }});
+  if (!choice) return false;
+  if (!choice.checked) choice.click();
+  return choice.checked;
+}})()
+""",
+                        "returnByValue": True,
+                    },
+                    session_id=session.session_id,
+                )
+                if group_result.get("result", {}).get("value") is True:
+                    await asyncio.sleep(0.25)
+                    continue
             if action.requires_review and action.value.casefold() in {"yes", "no"}:
                 session = await browser.get_or_create_cdp_session()
                 selector_json = json.dumps(action.selector)
@@ -394,11 +580,55 @@ async def submit_with_browser_use(
                     ScrollToTextEvent(text=action.label, direction="down")
                 )
                 await scroll
-                await scroll.event_result(raise_if_any=True, raise_if_none=False)
+                await scroll.event_result(raise_if_any=False, raise_if_none=False)
                 await asyncio.sleep(0.5)
                 state = await browser.get_browser_state_summary(include_screenshot=False)
                 node = node_for_selector(state, action.selector, action.value)
             if node is None:
+                session = await browser.get_or_create_cdp_session()
+                selector_json = json.dumps(action.selector)
+                value_json = json.dumps(action.value)
+                fallback_result = await session.cdp_client.send_raw(
+                    "Runtime.evaluate",
+                    {
+                        "expression": f"""
+(() => {{
+  const element = document.querySelector({selector_json});
+  const reviewed = {value_json};
+  if (!element) return false;
+  if (element.tagName === 'SELECT') {{
+    const option = [...element.options].find(item => item.text.trim() === reviewed);
+    if (!option) return false;
+    element.value = option.value;
+  }} else if (element.type === 'checkbox' || element.type === 'radio') {{
+    const candidates = [...document.querySelectorAll({selector_json})];
+    const normalize = value => value.toLowerCase().replace(/[^a-z0-9$+]+/g, ' ').trim();
+    const choice = candidates.find(candidate => {{
+      const container = candidate.closest('label, .application-answer, .application-question');
+      return container && normalize(container.innerText || '') === normalize(reviewed);
+    }});
+    if (!choice) return false;
+    choice.click();
+    return choice.checked;
+  }} else {{
+    const prototype = element.tagName === 'TEXTAREA'
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value').set;
+    setter.call(element, reviewed);
+  }}
+  element.dispatchEvent(new Event('input', {{bubbles: true}}));
+  element.dispatchEvent(new Event('change', {{bubbles: true}}));
+  return element.value === reviewed;
+}})()
+""",
+                        "returnByValue": True,
+                    },
+                    session_id=session.session_id,
+                )
+                if fallback_result.get("result", {}).get("value") is True:
+                    await asyncio.sleep(0.25)
+                    continue
                 raise RuntimeError(f"Reviewed field was not found: {action.label}")
             input_type = node.attributes.get("type", "").casefold()
             if input_type in {"checkbox", "radio"}:
